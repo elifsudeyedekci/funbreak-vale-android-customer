@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../../providers/theme_provider.dart';
+import '../../services/customer_cards_api.dart';
 
-// ÖDEME YÖNTEMLERİ EKRANI - KART EKLEME SİSTEMİ!
+// ÖDEME YÖNTEMLERİ EKRANI - BACKEND ENTEGRE!
 class PaymentMethodsScreen extends StatefulWidget {
   const PaymentMethodsScreen({Key? key}) : super(key: key);
 
@@ -12,18 +13,27 @@ class PaymentMethodsScreen extends StatefulWidget {
 }
 
 class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
-  List<Map<String, dynamic>> _savedCards = [
-    // ÖRNEK KAYITLI KART - KULLANICI SİLEBİLİR
-    {
-      'id': 'card_1',
-      'cardNumber': '**** **** **** 1234',
-      'cardHolder': 'JOHN DOE',
-      'expiryDate': '12/25',
-      'cardType': 'visa',
-      'isDefault': true,
-      'addedDate': '2024-01-15',
-    }
-  ];
+  final CustomerCardsApi _cardsApi = CustomerCardsApi();
+  List<Map<String, dynamic>> _savedCards = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCards();
+  }
+
+  // KARTLARI BACKEND'DEN YÜK
+  Future<void> _loadCards() async {
+    setState(() => _isLoading = true);
+    
+    final cards = await _cardsApi.getCards();
+    
+    setState(() {
+      _savedCards = cards;
+      _isLoading = false;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,7 +61,16 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
         ],
       ),
       body: SingleChildScrollView(
-        child: Column(
+        child: _isLoading
+            ? const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(50.0),
+                  child: CircularProgressIndicator(
+                    color: Color(0xFFFFD700),
+                  ),
+                ),
+              )
+            : Column(
           children: [
             // BİLGİLENDİRME KARTI
             Container(
@@ -315,16 +334,6 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
                   ),
                 ),
               const PopupMenuItem(
-                value: 'edit',
-                child: Row(
-                  children: [
-                    Icon(Icons.edit, color: Colors.blue, size: 18),
-                    SizedBox(width: 8),
-                    Text('Düzenle'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
                 value: 'delete',
                 child: Row(
                   children: [
@@ -348,34 +357,49 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
       case 'default':
         _setDefaultCard(card);
         break;
-      case 'edit':
-        _editCard(card);
-        break;
       case 'delete':
         _deleteCard(card);
         break;
     }
   }
 
-  // VARSAYILAN KART YAPMA
-  void _setDefaultCard(Map<String, dynamic> card) {
-    setState(() {
-      // Tüm kartların varsayılan durumunu kaldır
-      for (var c in _savedCards) {
-        c['isDefault'] = false;
-      }
-      // Seçilen kartı varsayılan yap
-      card['isDefault'] = true;
-    });
-    
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('${card['cardNumber']} varsayılan kart olarak ayarlandı'),
-        backgroundColor: Colors.green,
-      ),
+  // VARSAYILAN KART YAPMA - BACKEND ÇAĞRISI
+  void _setDefaultCard(Map<String, dynamic> card) async {
+    final success = await _cardsApi.updateCard(
+      cardId: card['id'],
+      setDefault: true,
     );
     
-    print('✅ Varsayılan kart değiştirildi: ${card['cardNumber']}');
+    if (success) {
+      setState(() {
+        // Tüm kartların varsayılan durumunu kaldır
+        for (var c in _savedCards) {
+          c['isDefault'] = false;
+        }
+        // Seçilen kartı varsayılan yap
+        card['isDefault'] = true;
+      });
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('${card['cardNumber']} varsayılan kart olarak ayarlandı'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+      
+      print('✅ Varsayılan kart değiştirildi: ${card['cardNumber']}');
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Varsayılan kart ayarlanamadı'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   // KART DÜZENLEME
@@ -384,7 +408,7 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
     _showAddCardDialog(editingCard: card);
   }
 
-  // KART SİLME
+  // KART SİLME - BACKEND ÇAĞRISI
   void _deleteCard(Map<String, dynamic> card) {
     showDialog(
       context: context,
@@ -397,26 +421,36 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
             child: const Text('İptal'),
           ),
           ElevatedButton(
-            onPressed: () {
-              setState(() {
-                _savedCards.remove(card);
-                
-                // Eğer silinen kart varsayılandı ve başka kart varsa, ilkini varsayılan yap
-                if (card['isDefault'] && _savedCards.isNotEmpty) {
-                  _savedCards.first['isDefault'] = true;
-                }
-              });
-              
+            onPressed: () async {
               Navigator.pop(context);
               
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Kart başarıyla silindi'),
-                  backgroundColor: Colors.orange,
-                ),
-              );
+              final success = await _cardsApi.deleteCard(card['id']);
               
-              print('🗑️ Kart silindi: ${card['cardNumber']}');
+              if (success) {
+                setState(() {
+                  _savedCards.remove(card);
+                });
+                
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Kart başarıyla silindi'),
+                      backgroundColor: Colors.orange,
+                    ),
+                  );
+                }
+                
+                print('🗑️ Kart silindi: ${card['cardNumber']}');
+              } else {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Kart silinemedi'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             child: const Text('Sil'),
@@ -575,8 +609,8 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
     );
   }
 
-  // KART KAYDETME
-  void _saveCard(Map<String, dynamic>? editingCard, String cardNumber, String cardHolder, String expiry, String cvv) {
+  // KART KAYDETME - BACKEND ÇAĞRISI
+  void _saveCard(Map<String, dynamic>? editingCard, String cardNumber, String cardHolder, String expiry, String cvv) async {
     // Basit validasyon
     if (editingCard == null && cardNumber.length < 16) {
       _showError('Geçerli bir kart numarası girin');
@@ -600,45 +634,65 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
 
     // KART KAYDETME/GÜNCELLEME
     if (editingCard != null) {
-      // Düzenleme modu
-      setState(() {
-        editingCard['cardHolder'] = cardHolder.toUpperCase();
-        editingCard['expiryDate'] = expiry;
-      });
-      
-      print('✅ Kart güncellendi: ${editingCard['cardNumber']}');
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Kart bilgileri güncellendi'),
-          backgroundColor: Colors.blue,
-        ),
+      // Düzenleme modu - BACKEND
+      final success = await _cardsApi.updateCard(
+        cardId: editingCard['id'],
+        cardHolder: cardHolder.toUpperCase(),
       );
+      
+      if (success) {
+        setState(() {
+          editingCard['cardHolder'] = cardHolder.toUpperCase();
+        });
+        
+        print('✅ Kart güncellendi: ${editingCard['cardNumber']}');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Kart bilgileri güncellendi'),
+              backgroundColor: Colors.blue,
+            ),
+          );
+        }
+      } else {
+        if (mounted) {
+          _showError('Kart güncellenemedi');
+        }
+        return;
+      }
     } else {
-      // Yeni kart ekleme
-      final newCard = {
-        'id': 'card_${DateTime.now().millisecondsSinceEpoch}',
-        'cardNumber': '**** **** **** ${cardNumber.substring(cardNumber.length - 4)}',
-        'fullCardNumber': cardNumber, // Şifrelenmiş saklanacak
-        'cardHolder': cardHolder.toUpperCase(),
-        'expiryDate': expiry,
-        'cardType': _detectCardType(cardNumber),
-        'isDefault': _savedCards.isEmpty, // İlk kart otomatik varsayılan
-        'addedDate': DateTime.now().toIso8601String(),
-      };
-      
-      setState(() {
-        _savedCards.add(newCard);
-      });
-      
-      print('✅ Yeni kart eklendi: ${newCard['cardNumber']}');
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Yeni kart başarıyla eklendi'),
-          backgroundColor: Colors.green,
-        ),
+      // Yeni kart ekleme - BACKEND
+      final result = await _cardsApi.addCard(
+        cardNumber: cardNumber,
+        cardHolder: cardHolder.toUpperCase(),
+        expiryDate: expiry,
+        cvv: cvv,
       );
+      
+      if (result != null && result['success'] == true && result['card'] != null) {
+        final newCard = result['card'];
+        
+        setState(() {
+          _savedCards.add(newCard);
+        });
+        
+        print('✅ Yeni kart eklendi: ${newCard['cardNumber']}');
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Yeni kart başarıyla eklendi'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        if (mounted) {
+          _showError('Kart eklenemedi');
+        }
+        return;
+      }
     }
 
     Navigator.pop(context);

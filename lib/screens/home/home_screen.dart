@@ -28,9 +28,11 @@ import '../../services/location_service.dart';
 import '../../services/location_search_service.dart';
 import '../../services/saved_addresses_service.dart';
 import '../../services/ride_service.dart';
+import '../../services/time_service.dart';
 import '../../providers/admin_api_provider.dart';
 import '../../services/dynamic_contact_service.dart';
 import '../payment/payment_methods_screen.dart';
+import '../../services/customer_cards_api.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
@@ -51,9 +53,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   LatLng? _destinationLocation;
   String _pickupAddress = 'Konumunuzu seçin';
   String _destinationAddress = 'Nereye gitmek istiyorsunuz?';
+  
+  // 🔥 ARA DURAK SİSTEMİ
+  List<Map<String, dynamic>> _waypoints = []; // {address: String, location: LatLng}
+  
   bool _isLoading = false;
   bool _showTimeSelection = false;
   DateTime? _selectedDateTime;
+  bool _isLongTermTripCache = false; // Server time kontrolü cache
   String _selectedTimeOption = 'Hemen';
   String _selectedServiceType = 'vale'; // 'vale' or 'hourly'
   double? _estimatedPrice;
@@ -82,6 +89,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   // REAL-TIME SEARCH DEBOUNCING
   Timer? _searchDebounce;
   
+  // BİLDİRİM BADGE SAYISI
+  int _unreadNotificationCount = 0;
+  bool _badgeLoaded = false;
+  
   // 2 AŞAMALI SİSTEM DEĞİŞKENLERİ
   bool _termsAccepted = true; // VARSAYILAN OLARAK KABUL EDİLMİŞ - UX İYİLEŞTİRMESİ!
   String _selectedPaymentMethod = 'card';
@@ -90,16 +101,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   int? _currentRideId;
   bool _driverFound = false;
   int _requestStage = 0;
-  List<Map<String, dynamic>> _userCards = [
-    {
-      'id': 'card_default',
-      'cardNumber': '**** **** **** 1234',
-      'cardHolder': 'JOHN DOE',
-      'expiryDate': '12/25',
-      'cardType': 'visa',
-      'isDefault': true,
-    }
-  ];
+  List<Map<String, dynamic>> _userCards = [];
+  final CustomerCardsApi _cardsApi = CustomerCardsApi();
   
   // FİREBASE REFERENCE - EKSİK İMPORT SORUNU ÇÖZÜLDİ
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -121,12 +124,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     
     _getCurrentLocationImproved();
     _loadHourlyPackages();
+    _loadUserCards(); // 🔥 KARTLARI BACKEND'DEN YÜK
     
     // FIREBASE BİLDİRİM - ANA SAYFA BADGE REFRESH!
     _setupNotificationBadgeListener();
     
     // MANUEL ATAMA SONRASI OTOMATİK YOLCULUK EKRANI KONTROLÜ
     _checkBackendActiveRide();
+    
+    // Badge sayısını yükle
+    _refreshBadgeCount();
   }
   
   // Customer ID'yi dinamik olarak al
@@ -191,23 +198,29 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
   
+  // Badge sayısını yenile
+  Future<void> _refreshBadgeCount() async {
+    final count = await _getUnreadNotificationCount();
+    if (mounted) {
+      setState(() {
+        _unreadNotificationCount = count;
+        _badgeLoaded = true;
+      });
+      print('🔔 Badge güncellendi: $_unreadNotificationCount');
+    }
+  }
+  
   // ANA SAYFA BİLDİRİM BADGE REFRESH - FIREBASE LISTENER!
   void _setupNotificationBadgeListener() {
     try {
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         print('🔔 Ana sayfa: Firebase notification alındı');
+        final type = message.data['type'];
         
-        // Bildirim badge'ini refresh et
-        if (message.data['type'] == 'announcement') {
-          print('🔄 Ana sayfa badge refresh...');
-          
-          // setState'i tetikle (badge sayısını yenile)
-          if (mounted) {
-            setState(() {
-              // Badge refresh tetiklendi - _getUnreadNotificationCount() tekrar çağrılacak
-              print('✅ Badge refresh tamamlandı');
-            });
-          }
+        // Bildirim veya kampanya geldiğinde badge'i refresh et
+        if (type == 'announcement' || type == 'campaign') {
+          print('🔄 Ana sayfa badge refresh... (Type: $type)');
+          _refreshBadgeCount(); // Badge sayısını yenile
         }
       });
       
@@ -312,6 +325,48 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
+  // 🔥 KARTLARI BACKEND'DEN YÜK
+  Future<void> _loadUserCards() async {
+    try {
+      print('💳 Kullanıcı kartları yükleniyor...');
+      final cards = await _cardsApi.getCards();
+      setState(() {
+        _userCards = cards;
+      });
+      print('✅ ${cards.length} kart yüklendi');
+    } catch (e) {
+      print('❌ Kart yükleme hatası: $e');
+    }
+  }
+
+  // 🔥 ARA DURAK EKLEME
+  void _addWaypoint() {
+    if (_waypoints.length >= 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('En fazla 3 ara durak ekleyebilirsiniz'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 2),
+        ),
+      );
+      return;
+    }
+    
+    setState(() {
+      _waypoints.add({
+        'address': '',
+        'location': null,
+      });
+    });
+  }
+
+  // 🔥 ARA DURAK SİLME
+  void _removeWaypoint(int index) {
+    setState(() {
+      _waypoints.removeAt(index);
+    });
+  }
+
   Future<void> _calculatePrice() async {
     if (_pickupLocation == null || _destinationLocation == null) return;
     
@@ -320,19 +375,73 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     });
 
     try {
-      // Gerçek rota mesafesi ile fiyat hesapla
-      double totalPrice = await PricingService.calculateTotalPrice(
-        originLat: _pickupLocation!.latitude,
-        originLng: _pickupLocation!.longitude,
-        destinationLat: _destinationLocation!.latitude,
-        destinationLng: _destinationLocation!.longitude,
-      );
+      double totalDistance = 0.0;
+      
+      // 🔥 ARA DURAKLAR VAR MI?
+      if (_waypoints.isNotEmpty) {
+        print('🔄 === ARA DURAKLI ROTA FİYAT HESAPLAMA ===');
+        print('📍 Başlangıç: ${_pickupLocation!.latitude}, ${_pickupLocation!.longitude}');
+        
+        // 1. SEGMENT: Pickup → İlk Ara Durak
+        double segment1Distance = await PricingService.calculateRouteDistance(
+          originLat: _pickupLocation!.latitude,
+          originLng: _pickupLocation!.longitude,
+          destLat: _waypoints[0]['location'].latitude,
+          destLng: _waypoints[0]['location'].longitude,
+        );
+        totalDistance += segment1Distance;
+        print('📊 Segment 1 (Pickup → Ara Durak 1): $segment1Distance km');
+        
+        // 2. SEGMENT: Ara Duraklar arası
+        for (int i = 0; i < _waypoints.length - 1; i++) {
+          double segmentDistance = await PricingService.calculateRouteDistance(
+            originLat: _waypoints[i]['location'].latitude,
+            originLng: _waypoints[i]['location'].longitude,
+            destLat: _waypoints[i + 1]['location'].latitude,
+            destLng: _waypoints[i + 1]['location'].longitude,
+          );
+          totalDistance += segmentDistance;
+          print('📊 Segment ${i + 2} (Ara Durak ${i + 1} → Ara Durak ${i + 2}): $segmentDistance km');
+        }
+        
+        // 3. SEGMENT: Son Ara Durak → Destination
+        double lastSegmentDistance = await PricingService.calculateRouteDistance(
+          originLat: _waypoints.last['location'].latitude,
+          originLng: _waypoints.last['location'].longitude,
+          destLat: _destinationLocation!.latitude,
+          destLng: _destinationLocation!.longitude,
+        );
+        totalDistance += lastSegmentDistance;
+        print('📊 Segment ${_waypoints.length + 1} (Son Ara Durak → Destination): $lastSegmentDistance km');
+        
+        print('💰 TOPLAM MESAFE (${_waypoints.length} ara durak): $totalDistance km');
+        
+        // FİYAT HESAPLA (toplam mesafeye göre)
+        final pricingData = await PricingService.getPricingData();
+        double totalPrice = PricingService.calculateDistancePrice(totalDistance, pricingData?['distance_pricing']);
+        
+        setState(() {
+          _estimatedPrice = totalPrice;
+          _originalPrice = totalPrice;
+          _isLoading = false;
+        });
+        
+        print('✅ Ara duraklı fiyat: ₺$totalPrice');
+      } else {
+        // Normal fiyat hesaplama (ara durak yok)
+        double totalPrice = await PricingService.calculateTotalPrice(
+          originLat: _pickupLocation!.latitude,
+          originLng: _pickupLocation!.longitude,
+          destinationLat: _destinationLocation!.latitude,
+          destinationLng: _destinationLocation!.longitude,
+        );
 
-      setState(() {
-        _estimatedPrice = totalPrice;
-        _originalPrice = totalPrice;
-        _isLoading = false;
-      });
+        setState(() {
+          _estimatedPrice = totalPrice;
+          _originalPrice = totalPrice;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       print('Fiyat hesaplama hatası: $e');
       setState(() {
@@ -380,40 +489,32 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   color: Color(0xFFFFD700),
                   size: 28,
                 ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  child: Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: BoxDecoration(
-                      color: Colors.red,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    constraints: const BoxConstraints(
-                      minWidth: 12,
-                      minHeight: 12,
-                    ),
-                    child: FutureBuilder<int>(
-                      future: _getUnreadNotificationCount(),
-                      builder: (context, snapshot) {
-                        int count = snapshot.data ?? 0;
-                        // ✅ OKUNMAMIŞ YOKSA BADGE GİZLE!
-                        if (count == 0) {
-                          return const SizedBox.shrink(); // Boş widget - gözükmez
-                        }
-                        return Text(
-                          '$count',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 8,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        );
-                      },
+                // Badge sadece okunmamış varsa göster
+                if (_badgeLoaded && _unreadNotificationCount > 0)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: BoxDecoration(
+                        color: Colors.red,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      constraints: const BoxConstraints(
+                        minWidth: 12,
+                        minHeight: 12,
+                      ),
+                      child: Text(
+                        '$_unreadNotificationCount',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 8,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ), // IconButton kapanışı
@@ -594,11 +695,32 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                           if (_selectedServiceType == 'vale') ...[
                             _buildLocationSelector(
                               'Nereden',
-                                            _pickupAddress,
+                              _pickupAddress,
                               Icons.location_on,
                               Colors.green,
                               () => _selectLocation('pickup'),
+                              showMenu: true, // 3 nokta göster
+                              onMenuPressed: () => _showAddWaypointDialog(),
                             ),
+                            const SizedBox(height: 6),
+                            
+                            // 🔥 ARA DURAKLAR
+                            ..._waypoints.asMap().entries.map((entry) {
+                              final index = entry.key;
+                              final waypoint = entry.value;
+                              return Padding(
+                                padding: const EdgeInsets.only(bottom: 6),
+                                child: _buildWaypointSelector(
+                                  'Durak ${index + 1}',
+                                  waypoint['address'] ?? 'Ara durak seçin',
+                                  Icons.location_on,
+                                  Colors.orange,
+                                  () => _selectLocation('waypoint_$index'),
+                                  () => _removeWaypoint(index),
+                                ),
+                              );
+                            }).toList(),
+                            
                             const SizedBox(height: 6),
                             _buildLocationSelector(
                               'Nereye',
@@ -754,7 +876,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildLocationSelector(String title, String address, IconData icon, Color color, VoidCallback onTap) {
+  Widget _buildLocationSelector(
+    String title, 
+    String address, 
+    IconData icon, 
+    Color color, 
+    VoidCallback onTap,
+    {bool showMenu = false, VoidCallback? onMenuPressed}
+  ) {
     final themeProvider = Provider.of<ThemeProvider>(context);
     
     return GestureDetector(
@@ -806,14 +935,93 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               ],
                             ),
                           ),
-            Icon(
-              Icons.arrow_forward_ios,
-              size: 16, // Büyütüldü 14→16
-              color: themeProvider.isDarkMode ? Colors.grey[400] : Colors.grey[400],
-            ),
+            // 🔥 3 NOKTA MENÜ (Sadece "Nereden" için)
+            if (showMenu && onMenuPressed != null)
+              IconButton(
+                onPressed: onMenuPressed,
+                icon: const Icon(Icons.more_vert),
+                color: const Color(0xFFFFD700),
+                iconSize: 24,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              )
+            else
+              Icon(
+                Icons.arrow_forward_ios,
+                size: 16, // Büyütüldü 14→16
+                color: themeProvider.isDarkMode ? Colors.grey[400] : Colors.grey[400],
+              ),
                               ],
                             ),
                           ),
+    );
+  }
+  
+  // 🔥 ARA DURAK SEÇİCİ (SİL BUTONU İLE)
+  Widget _buildWaypointSelector(String title, String address, IconData icon, Color color, VoidCallback onTap, VoidCallback onDelete) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: themeProvider.isDarkMode ? Colors.grey[800] : Colors.grey[50],
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: color.withOpacity(0.3),
+            width: 2,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: color, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    address.isEmpty ? 'Ara durak seçin' : address,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: address.isEmpty 
+                          ? (themeProvider.isDarkMode ? Colors.grey[400] : Colors.grey[500])
+                          : (themeProvider.isDarkMode ? Colors.grey[300] : Colors.grey[700]),
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            // Sil butonu
+            IconButton(
+              onPressed: onDelete,
+              icon: const Icon(Icons.close, size: 20),
+              color: Colors.red,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -824,7 +1032,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
         Text(
-                                  'Vale Kaçta Gelsin?',
+                                  'Vale Ne Zaman Gelsin?',
                                   style: TextStyle(
                                     fontSize: 14,
             fontWeight: FontWeight.w600,
@@ -834,7 +1042,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         const SizedBox(height: 8),
                                 Row(
                                   children: [
-            Expanded(child: _buildModernTimeOption('Hemen\n(Ortalama 30 Dk)')),
+            Expanded(child: _buildModernTimeOption('Hemen\n(Tahmini 30 Dk)')),
             const SizedBox(width: 6),
             Expanded(child: _buildModernTimeOption('1 Saat Sonra')),
             const SizedBox(width: 6),
@@ -850,7 +1058,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     final isSelected = _selectedTimeOption == option;
     
     return GestureDetector(
-      onTap: () {
+      onTap: () async {
         setState(() {
           _selectedTimeOption = option;
         });
@@ -861,6 +1069,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           setState(() {
             _selectedDateTime = null;
           });
+          // 🔒 Long-term status temizle (unawaited - arka planda çalışsın)
+          _updateLongTermTripStatus();
         }
       },
       child: Container(
@@ -955,6 +1165,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void _selectLocation(String type) {
     final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
     
+    // 🔥 ARA DURAK İNDEXİ BELİRLE
+    int? waypointIndex;
+    if (type.startsWith('waypoint_')) {
+      waypointIndex = int.tryParse(type.split('_')[1]);
+    }
+    
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
@@ -986,7 +1202,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Text(
-                type == 'pickup' ? 'Nereden?' : 'Nereye?',
+                type == 'pickup' 
+                    ? 'Nereden?' 
+                    : type == 'destination' 
+                        ? 'Nereye?' 
+                        : 'Ara Durak ${(waypointIndex ?? 0) + 1}',
                 style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.bold,
@@ -1301,7 +1521,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Column(
                       children: [
                     // 2 SAAT ÜSTÜ UYARI MESAJI!
-                    if (_isLongTermTrip()) ...[
+                    if (_isLongTermTripCache) ...[
                       Container(
                         padding: const EdgeInsets.all(12),
                         margin: const EdgeInsets.only(bottom: 16),
@@ -1556,6 +1776,56 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     const SizedBox(height: 12),
                   ],
                   _buildTripDetailRow('Zaman', _selectedTimeOption, Icons.schedule, Colors.blue),
+                  
+                  // 🔥 ARA DURAK BİLGİSİ
+                  if (_waypoints.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: const [
+                              Icon(Icons.route, color: Colors.orange, size: 18),
+                              SizedBox(width: 8),
+                              Text(
+                                'Rota Detayı',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${_waypoints.length} ara durak içeren rota',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '💡 Final fiyat sürücünün gerçek km\'sine göre hesaplanır',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.grey[600],
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  
                   if (_estimatedPrice != null) ...[
                     const SizedBox(height: 12),
                     _buildTripDetailRow('Tahmini Fiyat', '₺${_estimatedPrice!.toStringAsFixed(2)}', Icons.payment, const Color(0xFFFFD700)),
@@ -2104,17 +2374,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       builder: (context) => const NotificationsBottomSheet(),
     );
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('notifications_last_opened', DateTime.now().toIso8601String());
-    setState(() {});
+    // 🔥 BADGE REFRESH - Modal kapandıktan sonra yenile
+    print('🔄 Modal kapandı - Badge sayısı yenileniyor...');
+    await _refreshBadgeCount();
+    print('✅ Bildirim bottom sheet kapatıldı - badge refresh edildi');
   }
 
   Future<void> _showCustomTimePicker() async {
+    // 🔒 SERVER TIME AL!
+    final serverNow = await TimeService.getServerTime();
+    print('🕐 DatePicker açılıyor - Server time: $serverNow');
+    
     final DateTime? pickedDate = await showDatePicker(
       context: context,
-      initialDate: DateTime.now().add(const Duration(hours: 1)),
-      firstDate: DateTime.now(),
-      lastDate: DateTime.now().add(const Duration(days: 7)),
+      initialDate: serverNow.add(const Duration(hours: 1)),
+      firstDate: serverNow,
+      lastDate: serverNow.add(const Duration(days: 7)),
       builder: (context, child) {
         return Theme(
           data: Theme.of(context).copyWith(
@@ -2129,9 +2404,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     );
     
     if (pickedDate != null) {
+      // 🔒 SERVER TIME'A GÖRE BAŞLANGIÇ SAATİ
+      final currentServerTime = await TimeService.getServerTime();
+      final TimeOfDay initialTime = TimeOfDay(
+        hour: currentServerTime.hour,
+        minute: currentServerTime.minute,
+      );
+      
       final TimeOfDay? pickedTime = await showTimePicker(
         context: context,
-        initialTime: TimeOfDay.now(),
+        initialTime: initialTime,
         builder: (context, child) {
           return Theme(
             data: Theme.of(context).copyWith(
@@ -2153,11 +2435,53 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           pickedTime.hour,
           pickedTime.minute,
         );
-
+        
+        // 🔒 GEÇMİŞ ZAMAN KONTROLÜ - SERVER TIME İLE!
+        final checkServerTime = await TimeService.getServerTime();
+        final timeDiff = selectedDateTime.difference(checkServerTime);
+        
+        print('🕐 Seçilen: $selectedDateTime');
+        print('🕐 Server: $checkServerTime');
+        print('⏱️ Fark: ${timeDiff.inMinutes} dakika');
+        
+        // GEÇMİŞ ZAMAN SEÇİLDİYSE UYARI VER!
+        if (timeDiff.isNegative) {
+          print('⚠️ GEÇMİŞ ZAMAN SEÇİLDİ - Uyarı veriliyor!');
+          
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.warning, color: Colors.orange, size: 28),
+                  SizedBox(width: 12),
+                  Text('Geçersiz Zaman'),
+                ],
+              ),
+              content: const Text(
+                'Geçmiş bir zaman seçtiniz. Lütfen gelecek bir tarih ve saat seçin.\n\nNot: Telefon saatiniz yanlış olabilir.',
+                style: TextStyle(fontSize: 16),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Tamam'),
+                ),
+              ],
+            ),
+          );
+          
+          return; // Geçmiş zamanı kaydetme!
+        }
+        
+        // GEÇERLİ ZAMAN - KAYDET!
         setState(() {
           _selectedDateTime = selectedDateTime;
           _selectedTimeOption = 'Özel Saat\n${pickedDate.day}/${pickedDate.month} ${pickedTime.format(context)}';
         });
+        
+        // 🔒 Server time ile long-term kontrolü yap
+        await _updateLongTermTripStatus();
       }
     }
   }
@@ -2752,15 +3076,31 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       if (details != null) {
         Navigator.pop(context); // Bottom sheet'i kapat
         
-          setState(() {
+        setState(() {
           final location = LatLng(details.latitude, details.longitude);
-          if (type == 'pickup') {
+          
+          // 🔥 WAYPOINT KONTROLÜ
+          if (type.startsWith('waypoint_')) {
+            final index = int.tryParse(type.split('_')[1]);
+            if (index != null && index >= 0 && index < _waypoints.length) {
+              _waypoints[index] = {
+                'address': details.formattedAddress,
+                'location': location,
+              };
+              print('✅ Waypoint $index güncellendi: ${details.formattedAddress}');
+              print('📍 Toplam waypoint sayısı: ${_waypoints.length}');
+              print('📍 Waypoint listesi: $_waypoints');
+            } else {
+              print('⚠️ Waypoint index hatalı: $index (toplam: ${_waypoints.length})');
+            }
+          } else if (type == 'pickup') {
             _pickupLocation = location;
             _pickupAddress = details.formattedAddress;
-        } else {
+          } else if (type == 'destination') {
             _destinationLocation = location;
             _destinationAddress = details.formattedAddress;
           }
+          
           _searchResults = []; // Arama sonuçlarını temizle
         });
 
@@ -3739,13 +4079,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     
     try {
       // ZAMAN KONTROLÜ - 2+ SAAT İLERİ Mİ?
-      final selectedTime = _selectedDateTime ?? DateTime.now();
-      final currentTime = DateTime.now();
+      // 🔒 GÜVENLİK: SERVER TIME KULLAN!
+      final selectedTime = _selectedDateTime ?? await TimeService.getServerTime();
+      final currentTime = await TimeService.getServerTime(); // ❌ DateTime.now() KULLANMA!
       final timeDifference = selectedTime.difference(currentTime);
+      
+      print('🕐 [REZERVASYON KONTROLÜ] Server time: $currentTime');
+      print('📅 [REZERVASYON KONTROLÜ] Selected time: $selectedTime');
+      print('⏱️ [REZERVASYON KONTROLÜ] Fark: ${timeDifference.inHours} saat ${timeDifference.inMinutes % 60} dakika');
       
       if (timeDifference.inHours >= 2) {
         // 2+ SAAT İLERİ - REZERVASYON SİSTEMİ!
-        print('⏰ 2+ saat ileri talep - rezervasyon sistemine yönlendiriliyor...');
+        print('⏰ 2+ saat ileri talep (${timeDifference.inHours}h) - rezervasyon sistemine yönlendiriliyor...');
         
         setState(() {
           _isLoading = false; // Loading'i durdur
@@ -3877,6 +4222,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         pickupLng: _pickupLocation?.longitude ?? 0.0,
         destinationLat: _destinationLocation?.latitude ?? 0.0,
         destinationLng: _destinationLocation?.longitude ?? 0.0,
+        waypoints: _waypoints, // 🔥 ARA DURAKLAR GÖNDERİLİYOR
       );
       
       print('📡 === PANEL API RESPONSE ===');
@@ -4474,6 +4820,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           if (_selectedServiceType == 'vale') ...[
             _buildCompactTripDetailRow('Nereden', _pickupAddress, Icons.location_on, Colors.green),
             const SizedBox(height: 8), // 12 → 8
+            
+            // 🔥 ARA DURAKLAR (Yolculuk Detayları Dialog)
+            if (_waypoints.isNotEmpty) ...[
+              for (int i = 0; i < _waypoints.length; i++) ...[
+                _buildCompactTripDetailRow(
+                  'Ara Durak ${i + 1}', 
+                  _waypoints[i]['address'] ?? 'Adres yok', 
+                  Icons.location_on, 
+                  Colors.orange
+                ),
+                const SizedBox(height: 8),
+              ],
+            ],
+            
             _buildCompactTripDetailRow('Nereye', _destinationAddress, Icons.location_on, Colors.red),
             const SizedBox(height: 8),
           ],
@@ -4807,14 +5167,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                       ),
                       subtitle: const Text('Ücretsiz ve güvenli'),
                       trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                      onTap: () {
+                      onTap: () async {
                         Navigator.pop(context);
-                        Navigator.push(
+                        await Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (context) => const PaymentMethodsScreen(),
                           ),
                         );
+                        // Geri dönünce kartları yenile
+                        _loadUserCards();
                       },
                     ),
                   ),
@@ -6231,10 +6593,17 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
   }
 
   // PANELDEKİ SAAT EŞİĞİ İLE YOLCULUK KONTROLÜ - REZERVASYON SİSTEMİ!
-  bool _isLongTermTrip() {
-    if (_selectedDateTime == null) return false;
+  // 🔒 GÜVENLİK: SERVER TIME KULLAN!
+  Future<void> _updateLongTermTripStatus() async {
+    if (_selectedDateTime == null) {
+      setState(() {
+        _isLongTermTripCache = false;
+      });
+      return;
+    }
     
-    final now = DateTime.now();
+    // 🔒 SERVER TIME AL - Telefon saati manipülasyonunu engeller
+    final now = await TimeService.getServerTime();
     final timeDifference = _selectedDateTime!.difference(now);
     
     // PANELDEKİ GECELIK PAKET EŞİĞİNİ KULLAN (varsayılan 2 saat)
@@ -6259,12 +6628,14 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
     if (isLongTerm) {
       print('⏰ UZUN YOLCULUK TESPİT EDİLDİ!');
       print('📅 Seçilen zaman: ${_selectedDateTime.toString()}');  
-      print('⏱️ Şimdiki zaman: ${now.toString()}');
+      print('⏱️ Server time (şimdi): ${now.toString()}');
       print('🕐 Saat farkı: ${timeDifference.inHours} saat (Eşik: ${hourlyToNightlyThreshold}h)');
       print('🚫 Kendi vale seçimi DEVRE DIŞI - rezervasyona gidecek!');
     }
     
-    return isLongTerm;
+    setState(() {
+      _isLongTermTripCache = isLongTerm;
+    });
   }
 
   // DİNAMİK BİLDİRİM SAYISI - ANA SAYFA BADGE! 
@@ -6282,29 +6653,55 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
       print('📱 API çağrısı tamamlandı: ${campaigns.length} kampanya, ${announcements.length} duyuru');
       
       final prefs = await SharedPreferences.getInstance();
-      final lastOpenedStr = prefs.getString('notifications_last_opened');
-      DateTime? lastOpened;
-      if (lastOpenedStr != null && lastOpenedStr.isNotEmpty) {
-        lastOpened = DateTime.tryParse(lastOpenedStr);
+      
+      // 🔥 AYRI AYRI OKUNMA TARİHİ KONTROLÜ
+      final lastAnnouncementsStr = prefs.getString('last_notifications_opened');
+      final lastCampaignsStr = prefs.getString('last_campaigns_opened');
+      
+      DateTime? lastAnnouncementsOpened;
+      DateTime? lastCampaignsOpened;
+      
+      if (lastAnnouncementsStr != null && lastAnnouncementsStr.isNotEmpty) {
+        lastAnnouncementsOpened = DateTime.tryParse(lastAnnouncementsStr);
+      }
+      if (lastCampaignsStr != null && lastCampaignsStr.isNotEmpty) {
+        lastCampaignsOpened = DateTime.tryParse(lastCampaignsStr);
       }
 
       int count = 0;
-      final allItems = [...campaigns, ...announcements];
-      for (final item in allItems) {
-        final rawDate = item['date']?.toString() ?? item['created_at']?.toString() ?? '';
+      
+      // 🔥 DUYURULARI KONTROL ET
+      for (final announcement in announcements) {
+        final rawDate = announcement['date']?.toString() ?? announcement['created_at']?.toString() ?? '';
         DateTime? itemDate;
         if (rawDate.isNotEmpty) {
           itemDate = DateTime.tryParse(rawDate) ?? DateTime.tryParse(rawDate.replaceAll(' ', 'T'));
         }
 
-        if (lastOpened == null) {
+        if (lastAnnouncementsOpened == null) {
           count++;
-        } else if (itemDate != null && itemDate.isAfter(lastOpened)) {
+        } else if (itemDate != null && itemDate.isAfter(lastAnnouncementsOpened)) {
           count++;
         }
       }
       
-      print('📱 Toplam bildirim count: $count');
+      // 🔥 KAMPANYALARI KONTROL ET (ID BAZLI)
+      final readCampaignIds = prefs.getStringList('read_campaign_ids') ?? [];
+      print('🎯 Kampanya kontrolü başlıyor - Okunan ID\'ler: $readCampaignIds');
+      
+      for (final campaign in campaigns) {
+        final campaignId = campaign['id'].toString();
+        
+        // Bu kampanya okunmuş mu?
+        if (readCampaignIds.contains(campaignId)) {
+          print('✅ Kampanya ${campaign['title']}: OKUNMUŞ (ID: $campaignId)');
+        } else {
+          count++;
+          print('🎯 Kampanya ${campaign['title']}: OKUNMAMIş (ID: $campaignId yeni)');
+        }
+      }
+      
+      print('📱 Toplam okunmamış bildirim count: $count');
       return count;
     } catch (e) {
       print('❌ Bildirim sayısı alma hatası: $e');
@@ -6803,5 +7200,399 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
     }
   }
 
-} 
+  // 🔥 ARA DURAK EKLEME DİALOGU
+  void _showAddWaypointDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.add_location_alt, color: Color(0xFFFFD700)),
+            SizedBox(width: 12),
+            Text('Ara Durak Ekle'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Alış ve varış noktanız arasına ara durak ekleyebilirsiniz.',
+              style: TextStyle(fontSize: 14, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            if (_waypoints.isEmpty)
+              const Text(
+                'Henüz ara durak eklenmedi.',
+                style: TextStyle(fontStyle: FontStyle.italic, color: Colors.grey),
+              )
+            else
+              ..._waypoints.asMap().entries.map((entry) {
+                final index = entry.key;
+                final waypoint = entry.value;
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '${index + 1}. ${waypoint['address']}',
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red, size: 20),
+                        onPressed: () {
+                          setState(() {
+                            _waypoints.removeAt(index);
+                          });
+                          Navigator.pop(context);
+                          _showAddWaypointDialog(); // Dialogu yenile
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Kapat'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () {
+              Navigator.pop(context);
+              _showWaypointSelectionModal();
+            },
+            icon: const Icon(Icons.add),
+            label: const Text('Ara Durak Seç'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFFD700),
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🔥 ARA DURAK SEÇİM MODALI (Arama + Harita)
+  void _showWaypointSelectionModal() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(24),
+            topRight: Radius.circular(24),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[400],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  const Text(
+                    'Ara Durak Seçin',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  
+                  // Arama Yap
+                  _buildWaypointOption(
+                    icon: Icons.search,
+                    title: 'Arama Yap',
+                    subtitle: 'Konum adı yazarak arayın',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _searchWaypointLocation();
+                    },
+                  ),
+                  
+                  const SizedBox(height: 12),
+                  
+                  // Haritadan Seç
+                  _buildWaypointOption(
+                    icon: Icons.map,
+                    title: 'Haritadan Seç',
+                    subtitle: 'Harita üzerinden konum belirleyin',
+                    onTap: () {
+                      Navigator.pop(context);
+                      _selectWaypointFromMap();
+                    },
+                  ),
+                  
+                  const SizedBox(height: 20),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildWaypointOption({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFD700).withOpacity(0.1),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFFFD700).withOpacity(0.3)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: const BoxDecoration(
+                color: Color(0xFFFFD700),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(icon, color: Colors.white, size: 24),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Colors.black87,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // 🔥 ARA DURAK ARAMA İLE SEÇ
+  void _searchWaypointLocation() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (context) => _buildWaypointSearchModal(),
+    );
+  }
+  
+  Widget _buildWaypointSearchModal() {
+    List<PlaceAutocomplete> searchResults = [];
+    
+    return StatefulBuilder(
+      builder: (BuildContext context, StateSetter setModalState) => Container(
+        height: MediaQuery.of(context).size.height * 0.85,
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.only(
+            topLeft: Radius.circular(24),
+            topRight: Radius.circular(24),
+          ),
+        ),
+        child: Column(
+          children: [
+            // Handle bar
+            Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 20),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[400],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            
+            // Title
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 20),
+              child: Text(
+                'Ara Durak Ara',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black,
+                ),
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // Arama çubuğu
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: TextField(
+                autofocus: true,
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 16,
+                ),
+                decoration: InputDecoration(
+                  hintText: 'Ara durak ara...',
+                  hintStyle: TextStyle(color: Colors.grey[500]),
+                  prefixIcon: const Icon(Icons.search, color: Color(0xFFFFD700)),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Color(0xFFFFD700)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    borderSide: const BorderSide(color: Color(0xFFFFD700), width: 2),
+                  ),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+                onChanged: (value) async {
+                  if (value.length < 2) {
+                    setModalState(() => searchResults = []);
+                    return;
+                  }
+                  
+                  final results = await LocationSearchService.getPlaceAutocomplete(value);
+                  setModalState(() => searchResults = results);
+                },
+              ),
+            ),
+            
+            // Arama sonuçları
+            if (searchResults.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  itemCount: searchResults.length,
+                  itemBuilder: (context, index) {
+                    final result = searchResults[index];
+                    return ListTile(
+                      leading: const Icon(Icons.location_on, color: Color(0xFFFFD700)),
+                      title: Text(
+                        result.mainText,
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Text(
+                        result.secondaryText,
+                        style: const TextStyle(
+                          color: Colors.black87,
+                        ),
+                      ),
+                      onTap: () async {
+                        // Detayları al
+                        final details = await LocationSearchService.getPlaceDetails(result.placeId);
+                        
+                        if (details != null) {
+                          setState(() {
+                            _waypoints.add({
+                              'location': LatLng(details.latitude, details.longitude),
+                              'address': details.formattedAddress,
+                            });
+                          });
+                          
+                          Navigator.pop(context);
+                          
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Ara durak eklendi: ${details.formattedAddress}'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                      },
+                    );
+                  },
+                ),
+              ),
+            ] else ...[
+              const SizedBox(height: 40),
+              const Center(
+                child: Text(
+                  'Ara durak aramaya başlayın...',
+                  style: TextStyle(
+                    color: Colors.black54,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ],
+            
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  // 🔥 ARA DURAK HARİTADAN SEÇ
+  void _selectWaypointFromMap() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => MapLocationPicker(
+          initialLocation: _pickupLocation ?? _currentLocation,
+          onLocationSelected: (location, address) {
+            setState(() {
+              _waypoints.add({
+                'location': location,
+                'address': address,
+              });
+            });
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Ara durak eklendi: $address'),
+                backgroundColor: Colors.green,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+ 
 

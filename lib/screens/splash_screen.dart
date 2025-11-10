@@ -9,7 +9,7 @@ import 'package:http/http.dart' as http;
 import '../providers/auth_provider.dart';
 import '../services/dynamic_contact_service.dart';
 import 'main_screen.dart';
-import 'auth/login_screen.dart';
+import 'auth/sms_login_screen.dart';
 import '../main.dart' show navigatorKey; // MAIN.DART'DAN IMPORT
 
 class SplashScreen extends StatefulWidget {
@@ -45,7 +45,7 @@ class _SplashScreenState extends State<SplashScreen> {
       );
     } else {
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => const LoginScreen()),
+        MaterialPageRoute(builder: (context) => const SmsLoginScreen()),
       );
     }
   }
@@ -125,11 +125,7 @@ class _SplashScreenState extends State<SplashScreen> {
         },
       );
       
-      // ANDROID NOTIFICATION CHANNEL OLUŞTUR - KRİTİK!
-      await _createNotificationChannel();
-      
-      // PUSH NOTIFICATION HANDLER'LARI EKLE - EKSİK FONKSİYON!
-      _setupPushNotificationHandlers(messaging);
+      // BİLDİRİM SERVİSİ main.dart'ta başlatılıyor - burada tekrar etme!
       
       // DynamicContactService - ARKA PLANDA BAŞLAT (blocking etmesin)
       DynamicContactService.initialize().catchError((e) {

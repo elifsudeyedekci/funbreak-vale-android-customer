@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // 🔥 SERVICES IMPORT!
 import 'package:provider/provider.dart';
 import '../providers/rating_provider.dart';
 
@@ -81,13 +82,14 @@ class RatingDialog {
               const SizedBox(height: 20),
               
               // Yorum Alanı - ✅ TÜRKÇE KARAKTER DESTEĞİ
-              TextField(
+              TextFormField(
                 controller: commentController,
-                maxLines: 3,
-                keyboardType: TextInputType.multiline, // 🔥 Türkçe karakter desteği
-                textInputAction: TextInputAction.newline, // Enter ile yeni satır
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                enableSuggestions: true,
+                autocorrect: true,
                 decoration: InputDecoration(
-                  hintText: 'Yorumunuz (isteğe bağlı)',
+                  hintText: 'Test: ş ğ ü ı ö ç Ş Ğ Ü İ Ö Ç',
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -96,6 +98,7 @@ class RatingDialog {
                     borderSide: const BorderSide(color: Color(0xFFFFD700)),
                   ),
                 ),
+                maxLines: 3,
               ),
             ],
           ),

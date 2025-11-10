@@ -425,8 +425,60 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Yolculuk İptal'),
-        content: const Text('Bu yolculuğu iptal etmek istediğinizden emin misiniz?'),
+        title: const Row(
+          children: [
+            Icon(Icons.warning, color: Colors.orange, size: 28),
+            SizedBox(width: 12),
+            Text('Yolculuğu İptal Et'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Bu yolculuğu iptal etmek istediğinizden emin misiniz?',
+              style: TextStyle(fontSize: 16),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange, width: 1),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '⚠️ ÖNEMLİ BİLGİLENDİRME',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                      color: Colors.orange,
+                    ),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    '• HEMEN seçeneği: Vale kabul ettikten 5 dakika sonra iptal ederseniz ₺1,500 iptal ücreti alınır.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '• REZERVASYON: Yolculuğun başlama saatine 45 dakikadan az kalmışsa ₺1,500 iptal ücreti alınır.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '• İptal ücreti varsa direkt ödeme ekranına yönlendirileceksiniz.',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -485,9 +537,10 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
         print('📱 İPTAL API RESPONSE: ${response.body}');
         
         if (data['success'] == true) {
-          final cancellationFee = data['cancellation_fee'] ?? 0.0;
+          final cancellationFee = (data['cancellation_fee'] ?? 0.0) is int 
+              ? (data['cancellation_fee'] as int).toDouble() 
+              : data['cancellation_fee'] ?? 0.0;
           final feeApplied = data['fee_applied'] ?? false;
-          final minutesUntil = data['minutes_until_ride'] ?? 0;
           
           // RideProvider'dan temizle
           final rideProvider = Provider.of<RideProvider>(context, listen: false);
@@ -495,34 +548,109 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
           
           print('✅ Yolculuk iptal edildi: ${ride['id']}, Ücret: ₺$cancellationFee');
           
-          // SnackBar ile bilgi ver ve otomatik ana sayfaya dön
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  const Icon(Icons.check_circle, color: Colors.white),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      feeApplied && cancellationFee > 0 
-                        ? '✅ Yolculuk iptal edildi. İptal ücreti: ₺${cancellationFee.toStringAsFixed(0)}'
-                        : '✅ Yolculuk başarıyla iptal edildi',
+          // ÜCRETLİ İPTAL İSE DİREKT ÖDEME EKRANINA YÖNLENDİR!
+          if (feeApplied && cancellationFee > 0) {
+            print('💳 İptal ücreti var (₺$cancellationFee) - Ödeme ekranına yönlendiriliyor...');
+            
+            // Bilgilendirme dialogu göster
+            await showDialog(
+              context: context,
+              barrierDismissible: false,
+              builder: (context) => AlertDialog(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                title: const Row(
+                  children: [
+                    Icon(Icons.payment, color: Color(0xFFFFD700), size: 28),
+                    SizedBox(width: 12),
+                    Text('İptal Ücreti'),
+                  ],
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'Yolculuğunuz iptal edildi.',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.red, width: 2),
+                      ),
+                      child: Column(
+                        children: [
+                          const Text(
+                            'İptal Ücreti',
+                            style: TextStyle(color: Colors.black54, fontSize: 14),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '₺${cancellationFee.toStringAsFixed(0)}',
+                            style: const TextStyle(
+                              color: Colors.black,
+                              fontSize: 32,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Lütfen ödeme yapınız.',
+                      style: TextStyle(color: Colors.black54, fontSize: 14),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+                actions: [
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      Navigator.pushNamedAndRemoveUntil(context, '/main', (route) => false);
+                      // TODO: Ödeme ekranı navigator push yapılacak
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFFD700),
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    ),
+                    child: const Text(
+                      'Ödeme Yap',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                   ),
                 ],
               ),
-              backgroundColor: Colors.green,
-              behavior: SnackBarBehavior.floating,
-              duration: const Duration(seconds: 3),
-            ),
-          );
-          
-          // Otomatik ana sayfaya dön (1 saniye sonra)
-          Future.delayed(const Duration(seconds: 1), () {
-            if (mounted) {
-              Navigator.pushNamedAndRemoveUntil(context, '/main', (route) => false);
-            }
-          });
+            );
+          } else {
+            // ÜCRETSİZ İPTAL - SnackBar ile bilgi ver
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Row(
+                  children: [
+                    Icon(Icons.check_circle, color: Colors.white),
+                    SizedBox(width: 8),
+                    Expanded(child: Text('✅ Yolculuk ücretsiz iptal edildi')),
+                  ],
+                ),
+                backgroundColor: Colors.green,
+                behavior: SnackBarBehavior.floating,
+                duration: Duration(seconds: 3),
+              ),
+            );
+            
+            // Otomatik ana sayfaya dön (1 saniye sonra)
+            Future.delayed(const Duration(seconds: 1), () {
+              if (mounted) {
+                Navigator.pushNamedAndRemoveUntil(context, '/main', (route) => false);
+              }
+            });
+          }
           
           // Listeyi yenile
           await _loadActiveRides();
@@ -699,6 +827,17 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
     final ridePrice = double.tryParse(ride['final_price']?.toString() ?? ride['estimated_price']?.toString() ?? '0') ?? 0.0;
     final rideStatus = ride['status']?.toString() ?? 'completed';
     
+    // 🎁 İndirim bilgisi
+    final discountCode = ride['discount_code']?.toString() ?? '';
+    final discountAmount = double.tryParse(ride['discount_amount']?.toString() ?? '0') ?? 0.0;
+    final hasDiscount = discountCode.isNotEmpty && discountAmount > 0;
+    final originalPrice = hasDiscount ? ridePrice + discountAmount : ridePrice;
+    
+    // 🔍 DEBUG
+    if (ride['id'].toString() == '487' || ride['id'].toString() == '488') {
+      print('🎁 MÜŞTERİ GEÇMİŞ #${ride['id']}: discount_code=$discountCode, discount_amount=$discountAmount, hasDiscount=$hasDiscount');
+    }
+    
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       elevation: 2,
@@ -822,13 +961,36 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
                       ),
                     ],
                   ),
-                  Text(
-                    '₺${ridePrice.toStringAsFixed(2)}',
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFFFFD700),
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (hasDiscount) ...[
+                        Text(
+                          '₺${originalPrice.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[500],
+                            decoration: TextDecoration.lineThrough,
+                          ),
+                        ),
+                        Text(
+                          '🎁 -₺${discountAmount.toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: Colors.orange,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                      Text(
+                        '₺${ridePrice.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFFFFD700),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -1310,7 +1472,10 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
             padding: const EdgeInsets.only(bottom: 4),
             child: Text(
               item,
-              style: const TextStyle(fontSize: 14),
+              style: const TextStyle(
+                fontSize: 14,
+                color: Colors.black87,
+              ),
             ),
           )),
         ],
@@ -1321,6 +1486,14 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
   Widget _buildPriceBreakdown(Map<String, dynamic> ride, double estimatedPrice, double actualPrice, int waitingTime) {
     final waitingFee = waitingTime > 15 ? (waitingTime - 15) * 10.0 : 0.0;
     final baseFare = actualPrice - waitingFee;
+    
+    // 🎁 İndirim bilgilerini al
+    final discountCode = ride['discount_code']?.toString() ?? '';
+    final discountAmount = double.tryParse(ride['discount_amount']?.toString() ?? '0') ?? 0.0;
+    final hasDiscount = discountCode.isNotEmpty && discountAmount > 0;
+    
+    // İndirimsiz orijinal tutar
+    final originalPrice = hasDiscount ? actualPrice + discountAmount : actualPrice;
     
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
@@ -1333,13 +1506,19 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '💰 Ücret Detayları',
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFFFFD700),
-            ),
+          Row(
+            children: [
+              const Icon(Icons.currency_lira, color: Color(0xFFFFD700), size: 18),
+              const SizedBox(width: 8),
+              const Text(
+                'Ücret Detayları',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFFFD700),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           
@@ -1354,6 +1533,40 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
           if (ride['special_location_fee'] != null && double.tryParse(ride['special_location_fee'].toString()) != null && double.parse(ride['special_location_fee'].toString()) > 0)
             _buildPriceRow('Özel Konum Ücreti', double.parse(ride['special_location_fee'].toString())),
           
+          // 🎁 İndirim (varsa)
+          if (hasDiscount) ...[
+            const Divider(color: Color(0xFFFFD700)),
+            _buildPriceRow('Ara Toplam', originalPrice),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.discount, color: Colors.orange, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        'İndirim ($discountCode)',
+                        style: const TextStyle(
+                          color: Colors.orange,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    '-₺${discountAmount.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.orange,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          
           const Divider(color: Color(0xFFFFD700)),
           
           // Toplam
@@ -1365,6 +1578,7 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.bold,
+                  color: Colors.black87,
                 ),
               ),
               Text(
@@ -1388,10 +1602,16 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(title),
+          Text(
+            title,
+            style: const TextStyle(color: Colors.black87),
+          ),
           Text(
             '₺${amount.toStringAsFixed(2)}',
-            style: const TextStyle(fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              color: Colors.black87,
+            ),
           ),
         ],
       ),

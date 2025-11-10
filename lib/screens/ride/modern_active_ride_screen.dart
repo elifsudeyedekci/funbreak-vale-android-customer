@@ -58,12 +58,22 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
   // ✅ SAATLİK PAKET CACHE
   List<Map<String, double>> _cachedHourlyPackages = [];
   
+  // 🚗 KM TRACKING SYSTEM (SADECE NORMAL YOLCULUK İÇİN!)
+  double _totalDistanceKm = 0.0; // Toplam gidilen KM
+  LatLng? _lastDriverLocation; // Önceki sürücü konumu
+  bool _isDistanceTrackingActive = false; // KM hesaplama aktif mi
+  double _kmPrice = 20.0; // Panel'den çekilen KM fiyatı (varsayılan 20 TL/km)
+  String _lastRideStatus = ''; // Önceki ride status (waiting kontrolü için)
+  
   @override
   void initState() {
     super.initState();
     _initializeAnimations();
     _saveToPersistence();
     _loadHourlyPackages(); // Panel'den saatlik paketleri çek!
+    
+    // 🚗 KM FİYATINI PANEL'DEN ÇEK
+    _loadKmPriceFromPanel();
     
     // Başlangıçta konumları ayarla
     _customerLocation = LatLng(
@@ -81,7 +91,43 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
     WidgetsBinding.instance.addPostFrameCallback((_) {
     _initializeRideTracking();
     _initializePackageMonitoring();
+    _initializeDistanceTracking(); // 🚗 KM TRACKING BAŞLAT!
     });
+  }
+  
+  // 🚗 KM FİYATINI PANEL'DEN ÇEK
+  Future<void> _loadKmPriceFromPanel() async {
+    try {
+      final response = await http.get(
+        Uri.parse('https://admin.funbreakvale.com/api/get_pricing.php'),
+      ).timeout(const Duration(seconds: 5));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['pricing'] != null) {
+          // Panel'den gelen KM fiyatını al (km_price veya distance_price)
+          setState(() {
+            _kmPrice = (data['pricing']['km_price'] ?? data['pricing']['distance_price'] ?? 20.0).toDouble();
+          });
+          print('✅ KM fiyatı panel'den alındı: $_kmPrice TL/km');
+        }
+      }
+    } catch (e) {
+      print('⚠️ KM fiyatı alınamadı, varsayılan kullanılacak: 20 TL/km - $e');
+    }
+  }
+  
+  // 🚗 KM TRACKING SİSTEMİNİ BAŞLAT
+  void _initializeDistanceTracking() {
+    final rideType = widget.rideDetails['ride_type'] ?? 'standard';
+    
+    // Sadece normal yolculuklarda KM takibi!
+    if (rideType != 'hourly' && rideType != 'nightly') {
+      print('🚗 KM tracking başlatılıyor - Ride type: $rideType');
+      _isDistanceTrackingActive = true;
+    } else {
+      print('⏰ Saatlik/Gecelik paket - KM tracking YOK');
+    }
   }
   
   // YASAL SÖZLEŞME LOGLARI
@@ -1177,9 +1223,9 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
         if (data['success'] == true && data['active_rides'] != null) {
           final activeRides = data['active_rides'] as List;
           
-          // AKTİF YOLCULUK YOK - İPTAL EDİLMİŞ!
+          // AKTİF YOLCULUK YOK - İPTAL EDİLMİŞ VEYA TAMAMLANMIŞ!
           if (activeRides.isEmpty) {
-            print('⚠️ [MÜŞTERİ] Aktif yolculuk bulunamadı - iptal edilmiş olabilir');
+            print('⚠️ [MÜŞTERİ] Aktif yolculuk bulunamadı - iptal edilmiş veya tamamlanmış olabilir');
             
             try {
               // RideProvider'dan temizle
@@ -1192,31 +1238,105 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
               print('❌ RideProvider temizleme hatası: $e');
             }
             
-            // Yolculuk tamamlanmış olabilir - Backend'den son kez kontrol et!
-            print('🔍 [MÜŞTERİ] Aktif yolculuk boş - Completed mi kontrol ediliyor...');
-            
             // Önce tüm timer'ları durdur
             _trackingTimer?.cancel();
             
-            // ÖDEME EKRANINA YÖNLENDİR!
-            if (mounted) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) {
-                  print('💳 [MÜŞTERİ] Ödeme ekranına yönlendiriliyor...');
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(
-                      builder: (context) => RidePaymentScreen(
-                        rideDetails: Map<String, dynamic>.from(widget.rideDetails),
-                        rideStatus: {
-                          'status': 'completed',
-                          'final_price': widget.rideDetails['estimated_price'] ?? 0,
-                        },
-                      ),
-                    ),
-                  );
+            // 🔍 Backend'den son durumu kontrol et - tamamlanmış mı, iptal mi?
+            print('🔍 [MÜŞTERİ] Backendden son durum kontrol ediliyor...');
+            
+            try {
+              final customerId = await _getCustomerId();
+              final rideId = widget.rideDetails['ride_id']?.toString() ?? '0';
+              
+              final checkResponse = await http.get(
+                Uri.parse('https://admin.funbreakvale.com/api/check_ride_status.php?ride_id=$rideId&customer_id=$customerId'),
+              ).timeout(const Duration(seconds: 5));
+              
+              if (checkResponse.statusCode == 200) {
+                final checkData = jsonDecode(checkResponse.body);
+                final finalStatus = checkData['status'] ?? 'unknown';
+                final cancellationFee = (checkData['cancellation_fee'] ?? 0) is int 
+                    ? (checkData['cancellation_fee'] as int).toDouble() 
+                    : checkData['cancellation_fee'] ?? 0.0;
+                
+                print('📊 [MÜŞTERİ] Final status: $finalStatus');
+                print('💰 [MÜŞTERİ] Cancellation fee: ₺$cancellationFee');
+                
+                // COMPLETED İSE ÖDEME EKRANINA GİT!
+                if (finalStatus == 'completed') {
+                  print('💳 [MÜŞTERİ] Yolculuk tamamlandı - ödeme ekranına yönlendiriliyor...');
+                  
+                  if (mounted) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        Navigator.of(context).pushReplacement(
+                          MaterialPageRoute(
+                            builder: (context) => RidePaymentScreen(
+                              rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
+                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
+                                'km_price': _kmPrice, // 💰 Panel KM fiyatı
+                              }),
+                              rideStatus: {
+                                'status': 'completed',
+                                'final_price': widget.rideDetails['estimated_price'] ?? 0,
+                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
+                              },
+                            ),
+                          ),
+                        );
+                      }
+                    });
+                  }
                 }
-              });
+                // İPTAL EDİLMİŞ VE İPTAL ÜCRETİ VAR İSE ÖDEME EKRANINA GİT!
+                else if (finalStatus == 'cancelled' && cancellationFee > 0) {
+                  print('💳 [MÜŞTERİ] İptal edildi VE iptal ücreti var (₺$cancellationFee) - ödeme ekranına yönlendiriliyor...');
+                  
+                  if (mounted) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        Navigator.of(context).pushReplacement(
+                          MaterialPageRoute(
+                            builder: (context) => RidePaymentScreen(
+                              rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
+                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
+                                'km_price': _kmPrice, // 💰 Panel KM fiyatı
+                              }),
+                              rideStatus: {
+                                'status': 'cancelled',
+                                'final_price': cancellationFee,
+                                'is_cancellation_fee': true,
+                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
+                              },
+                            ),
+                          ),
+                        );
+                      }
+                    });
+                  }
+                }
+                // ÜCRETSİZ İPTAL - ANA SAYFAYA DÖN!
+                else {
+                  print('🏠 [MÜŞTERİ] Yolculuk iptal edilmiş ($finalStatus) - ücretsiz, ana sayfaya dönülüyor...');
+                  
+                  if (mounted) {
+                    Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/', (route) => false);
+                  }
+                }
+              } else {
+                // Backend hatası - ana sayfaya dön
+                print('❌ [MÜŞTERİ] Backend kontrol hatası - ana sayfaya dönülüyor...');
+                if (mounted) {
+                  Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/', (route) => false);
+                }
+              }
+            } catch (e) {
+              print('❌ [MÜŞTERİ] Status kontrol hatası: $e - ana sayfaya dönülüyor...');
+              if (mounted) {
+                Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/', (route) => false);
+              }
             }
+            
             return;
           }
           
@@ -1250,10 +1370,36 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
 
               // ŞOFÖR KONUM BİLGİLERİNİ AL! ✅
               if (activeRide['driver_lat'] != null && activeRide['driver_lng'] != null) {
-                _driverLocation = LatLng(
+                final newDriverLocation = LatLng(
                   (activeRide['driver_lat'] as num).toDouble(),
                   (activeRide['driver_lng'] as num).toDouble(),
                 );
+                
+                // 🚗 KM HESAPLAMA (SADECE NORMAL YOLCULUK + TRACKING AKTİF!)
+                if (_isDistanceTrackingActive && _lastDriverLocation != null) {
+                  // Önceki ve yeni konum arasındaki mesafeyi hesapla
+                  final distanceMeters = Geolocator.distanceBetween(
+                    _lastDriverLocation!.latitude,
+                    _lastDriverLocation!.longitude,
+                    newDriverLocation.latitude,
+                    newDriverLocation.longitude,
+                  );
+                  
+                  final distanceKm = distanceMeters / 1000; // metre → km
+                  
+                  // Ride status kontrolü: "waiting" değilse KM'ye ekle
+                  if (newStatus != 'waiting') {
+                    _totalDistanceKm += distanceKm;
+                    print('🚗 KM güncellendi: +${distanceKm.toStringAsFixed(2)} km → Toplam: ${_totalDistanceKm.toStringAsFixed(2)} km');
+                    print('💰 Anlık fiyat: ${(_totalDistanceKm * _kmPrice).toStringAsFixed(2)} TL (${_kmPrice} TL/km)');
+                  } else {
+                    print('⏸️ Bekleme durumunda - KM hesaplama durdu');
+                  }
+                }
+                
+                // Sürücü konumunu güncelle
+                _driverLocation = newDriverLocation;
+                _lastDriverLocation = newDriverLocation;
                 
                 print('📍 [MÜŞTERİ] Şoför konumu güncellendi: ${_driverLocation!.latitude}, ${_driverLocation!.longitude}');
                 
@@ -1298,8 +1444,13 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
                     builder: (context) => RidePaymentScreen(
-                      rideDetails: Map<String, dynamic>.from(widget.rideDetails),
-                      rideStatus: Map<String, dynamic>.from(_currentRideStatus),
+                      rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
+                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
+                        'km_price': _kmPrice, // 💰 Panel KM fiyatı
+                      }),
+                      rideStatus: Map<String, dynamic>.from(_currentRideStatus)..addAll({
+                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
+                      }),
                     ),
                   ),
                 );
@@ -1333,7 +1484,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
         if (mounted) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
-              Navigator.of(context).pushNamedAndRemoveUntil('/main', (route) => false);
+              Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
             }
           });
         }
@@ -2110,13 +2261,18 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                   ),
                   SizedBox(height: 8),
                   Text(
-                    'Rezervasyon saatinize 45 dakika veya daha az kalmışsa iptal ücreti uygulanacaktır.',
-                    style: TextStyle(color: Colors.white, fontSize: 13),
+                    '• HEMEN seçeneği: Vale kabul ettikten 5 dakika sonra iptal ederseniz ₺1,500 iptal ücreti alınır.',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
                   ),
                   SizedBox(height: 4),
                   Text(
-                    'İptal ücreti bir sonraki yolculuğunuzdan tahsil edilir.',
-                    style: TextStyle(color: Colors.white, fontSize: 13),
+                    '• REZERVASYON: Yolculuğun başlama saatine 45 dakikadan az kalmışsa ₺1,500 iptal ücreti alınır.',
+                    style: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '• İptal ücreti varsa direkt ödeme ekranına yönlendirileceksiniz.',
+                    style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                 ],
               ),
@@ -2196,7 +2352,9 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
           final data = jsonDecode(response.body);
           
           if (data['success'] == true) {
-            final cancellationFee = data['cancellation_fee'] ?? 0.0;
+            final cancellationFee = (data['cancellation_fee'] ?? 0.0) is int 
+                ? (data['cancellation_fee'] as int).toDouble() 
+                : data['cancellation_fee'] ?? 0.0;
             final feeApplied = data['fee_applied'] ?? false;
             
         // RideProvider'dan temizle (güvenli)
@@ -2207,43 +2365,180 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
           print('❌ RideProvider temizleme hatası: $e');
         }
             
-            // SnackBar ile bilgi ver ve direkt ana sayfaya dön
-            String snackMessage = feeApplied && cancellationFee > 0 
-              ? '✅ Yolculuk iptal edildi. İptal ücreti: ₺${cancellationFee.toStringAsFixed(0)}'
-              : '✅ Yolculuk başarıyla iptal edildi';
-            
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.check_circle, color: Colors.white),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(snackMessage)),
+            // ÜCRETLİ İPTAL İSE DİREKT ÖDEME EKRANINA YÖNLENDİR!
+            if (feeApplied && cancellationFee > 0) {
+              print('💳 İptal ücreti var (₺$cancellationFee) - Ödeme ekranına yönlendiriliyor...');
+              
+              // Bilgilendirme dialogu göster
+              await showDialog(
+                context: context,
+                barrierDismissible: false,
+                builder: (context) => AlertDialog(
+                  backgroundColor: const Color(0xFF1A1A2E),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                  title: const Row(
+                    children: [
+                      Icon(Icons.payment, color: Color(0xFFFFD700), size: 28),
+                      SizedBox(width: 12),
+                      Text('İptal Ücreti', style: TextStyle(color: Colors.white)),
+                    ],
+                  ),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text(
+                        'Yolculuğunuz iptal edildi.',
+                        style: TextStyle(color: Colors.white, fontSize: 16),
+                      ),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.red, width: 2),
+                        ),
+                        child: Column(
+                          children: [
+                            const Text(
+                              'İptal Ücreti',
+                              style: TextStyle(color: Colors.white70, fontSize: 14),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '₺${cancellationFee.toStringAsFixed(0)}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Lütfen ödeme yapınız.',
+                        style: TextStyle(color: Colors.white70, fontSize: 14),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                  actions: [
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFFFD700),
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                      ),
+                      child: const Text(
+                        'Ödeme Yap',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                    ),
                   ],
                 ),
-                backgroundColor: Colors.green,
-                behavior: SnackBarBehavior.floating,
+              );
+              
+              // ÖDEME EKRANINA YÖNLENDİR!
+              if (mounted) {
+                Navigator.of(context, rootNavigator: true).pushReplacement(
+                  MaterialPageRoute(
+                    builder: (context) => RidePaymentScreen(
+                      rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
+                        'status': 'cancelled',
+                        'cancellation_fee': cancellationFee,
+                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
+                        'km_price': _kmPrice, // 💰 Panel KM fiyatı
+                      }),
+                      rideStatus: {
+                        'status': 'cancelled',
+                        'final_price': cancellationFee,
+                        'is_cancellation_fee': true,
+                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
+                      },
+                    ),
+                  ),
+                );
+              }
+              
+            } else {
+              // ÜCRETSİZ İPTAL - SnackBar göster
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Row(
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.white),
+                      SizedBox(width: 8),
+                      Expanded(child: Text('✅ Yolculuk ücretsiz iptal edildi')),
+                    ],
+                  ),
+                  backgroundColor: Colors.green,
+                  behavior: SnackBarBehavior.floating,
                 duration: const Duration(seconds: 4),
               ),
             );
             
             // Direkt ana sayfaya dön (güvenli)
             if (mounted) {
-              Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/main', (route) => false);
+              Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/', (route) => false);
+            }
+          }
+            
+        } else {
+            // 🔥 DETAYLI HATA MESAJI - Kullanıcıya ne oldu göster
+            final errorMessage = data['message'] ?? 'Bilinmeyen hata';
+            print('❌ API Success=false - Message: $errorMessage');
+            print('❌ Full Response: $data');
+            
+            // Loading kapat (eğer hala açıksa)
+            if (mounted && Navigator.canPop(context)) {
+              try {
+                Navigator.pop(context);
+              } catch (e) {
+                print('Navigator pop hatası (zaten kapalı): $e');
+              }
             }
             
-          } else {
-            // Hata mesajı
             showDialog(
               context: context,
               builder: (context) => AlertDialog(
                 backgroundColor: const Color(0xFF1A1A2E),
-                title: const Text('İptal Hatası', style: TextStyle(color: Colors.white)),
-                content: Text(data['message'] ?? 'Bilinmeyen hata', style: const TextStyle(color: Colors.white)),
+                title: const Row(
+                  children: [
+                    Icon(Icons.error, color: Colors.red),
+                    SizedBox(width: 12),
+                    Text('İptal Hatası', style: TextStyle(color: Colors.white)),
+                  ],
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      errorMessage,
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Text(
+                        'Lütfen müşteri hizmetleri ile iletişime geçin.',
+                        style: TextStyle(color: Colors.orange, fontSize: 12),
+                      ),
+                    ),
+                  ],
+                ),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(context),
-                    child: const Text('Tamam', style: TextStyle(color: Colors.orange)),
+                    child: const Text('Tamam', style: TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
@@ -2276,7 +2571,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
           );
           
           if (mounted) {
-            Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/main', (route) => false);
+            Navigator.of(context, rootNavigator: true).pushNamedAndRemoveUntil('/', (route) => false);
           }
         }
       } catch (e) {
@@ -2663,7 +2958,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   // SAATLİK PAKETTE SÜRE, NORMAL VALEDE BEKLEME
   String _getWaitingOrDurationDisplay() {
     if (_isHourlyPackage()) {
-      // Saatlik pakette: "28 saat 43 dakika" formatında
+      // ✅ BACKEND'DEN GELEN ride_duration_hours ÖNCE KONTROL ET!
       final rideDurationHours = _currentRideStatus['ride_duration_hours'] ?? 
                                 widget.rideDetails['ride_duration_hours'];
       
@@ -2680,36 +2975,72 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
           return '$minutes dk';
         }
       }
-      return '0 saat';
+      
+      // FALLBACK: Manuel hesaplama (yolculuk başlamışsa)
+      final startedAtStr = _currentRideStatus['started_at']?.toString() ?? widget.rideDetails['started_at']?.toString();
+      if (startedAtStr != null && startedAtStr.isNotEmpty && startedAtStr != '0000-00-00 00:00:00') {
+        final startedAt = DateTime.tryParse(startedAtStr);
+        if (startedAt != null) {
+          final now = DateTime.now();
+          final duration = now.difference(startedAt);
+          final hours = duration.inHours;
+          final minutes = duration.inMinutes % 60;
+          
+          if (hours > 0 && minutes > 0) {
+            return '$hours saat $minutes dk';
+          } else if (hours > 0) {
+            return '$hours saat';
+          } else if (minutes > 0) {
+            return '$minutes dk';
+          }
+        }
+      }
+      
+      return '0 dk';
     } else {
       // Normal vale: Bekleme dakikası
       return '${_getCurrentWaitingTime()} dk';
     }
   }
   
-  // SAATLİK PAKET KONTROLÜ - 2 SAAT GEÇTİ Mİ? (BACKEND'DEN SERVER SAATİ!)
+  // SAATLİK PAKET KONTROLÜ - BACKEND'DEN GELEN service_type VE SÜRE!
   bool _isHourlyPackage() {
     try {
-      // Backend'den gelen server_time kullan (API'den geliyor)
-      final serverTimeStr = _currentRideStatus['server_time']?.toString();
-      final startedAtStr = _currentRideStatus['started_at']?.toString();
+      // ✅ ÖNCELİKLE service_type KONTROL ET!
+      final serviceType = (_currentRideStatus['service_type'] ?? widget.rideDetails['service_type'] ?? '').toString().toLowerCase();
+      if (serviceType == 'hourly') {
+        return true;
+      }
       
-      if (startedAtStr != null && startedAtStr.isNotEmpty) {
+      // ✅ BACKEND'DEN GELEN ride_duration_hours KULLAN!
+      final rideDurationHours = _currentRideStatus['ride_duration_hours'];
+      if (rideDurationHours != null) {
+        final hours = double.tryParse(rideDurationHours.toString()) ?? 0.0;
+        if (hours >= 2.0) {
+          return true;
+        }
+      }
+      
+      // FALLBACK: Manuel hesaplama (backend verisi yoksa)
+      final serverTimeStr = _currentRideStatus['server_time']?.toString();
+      final startedAtStr = _currentRideStatus['started_at']?.toString() ?? widget.rideDetails['started_at']?.toString();
+      
+      if (startedAtStr != null && startedAtStr.isNotEmpty && startedAtStr != '0000-00-00 00:00:00') {
         final startedAt = DateTime.tryParse(startedAtStr);
         
-        // Server time varsa onu kullan, yoksa fallback
         DateTime nowTR;
         if (serverTimeStr != null && serverTimeStr.isNotEmpty) {
           nowTR = DateTime.tryParse(serverTimeStr) ?? DateTime.now();
         } else {
-          // Fallback: UTC + 3
           final nowUtc = DateTime.now().toUtc();
           nowTR = nowUtc.add(const Duration(hours: 3));
         }
         
         if (startedAt != null) {
           final rideDurationHours = nowTR.difference(startedAt).inMinutes / 60.0;
-          return rideDurationHours >= 2.0;
+          if (rideDurationHours >= 2.0) {
+            return true;
+          }
         }
       }
     } catch (e) {

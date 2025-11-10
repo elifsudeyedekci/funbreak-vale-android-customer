@@ -3,6 +3,8 @@ import 'package:provider/provider.dart'; // PROVIDER IMPORT!
 import 'package:firebase_messaging/firebase_messaging.dart'; // FIREBASE IMPORT!
 import 'package:shared_preferences/shared_preferences.dart'; // SHARED PREFERENCES IMPORT!
 import '../providers/admin_api_provider.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 class NotificationsBottomSheet extends StatefulWidget {
   const NotificationsBottomSheet({Key? key}) : super(key: key);
@@ -17,12 +19,38 @@ class _NotificationsBottomSheetState extends State<NotificationsBottomSheet> wit
   List<Map<String, dynamic>> _campaigns = [];
   List<Map<String, dynamic>> _announcements = [];
   bool _isLoading = true;
+  
+  // 🔥 TAB OKUNMA TRACKING
+  bool _announcementsTabOpened = false;
+  bool _campaignsTabOpened = false;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this, initialIndex: 0); // DUYURULAR 0. INDEX!
     _loadData();
+    
+    // 🔥 TAB DEĞİŞİMİ DİNLE - Hangi tab açıldı takip et
+    _tabController.addListener(() {
+      print('🔍 Tab listener tetiklendi - Index: ${_tabController.index}, indexIsChanging: ${_tabController.indexIsChanging}');
+      
+      // indexIsChanging = false olduğunda gerçekten değişmiş demektir
+      if (!_tabController.indexIsChanging) {
+        if (_tabController.index == 0 && !_announcementsTabOpened) {
+          _announcementsTabOpened = true;
+          _markAnnouncementsAsRead();
+          print('📢 Duyurular tab\'ı açıldı - okundu olarak işaretlendi');
+        } else if (_tabController.index == 1 && !_campaignsTabOpened) {
+          _campaignsTabOpened = true;
+          _markCampaignsAsRead();
+          print('🎯 Kampanyalar tab\'ı açıldı - okundu olarak işaretlendi');
+        }
+      }
+    });
+    
+    // İlk tab (duyurular) otomatik açık - hemen işaretle
+    _announcementsTabOpened = true;
+    _markAnnouncementsAsRead();
     
     // FIREBASE MESAJ DİNLEME - UI REFRESH İÇİN!
     _setupFirebaseListener();
@@ -114,20 +142,63 @@ class _NotificationsBottomSheetState extends State<NotificationsBottomSheet> wit
   @override
   void dispose() {
     _tabController.dispose();
-    _markAllAsRead(); // Kapatılınca okundu olarak işaretle
+    // dispose'da artık işaretleme yapmıyoruz - tab değişiminde yapıyoruz
     super.dispose();
   }
   
-  // Tüm bildirimleri okundu olarak işaretle
-  Future<void> _markAllAsRead() async {
+  // 🔥 DUYURULARI OKUNDU OLARAK İŞARETLE
+  Future<void> _markAnnouncementsAsRead() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('last_notifications_opened', DateTime.now().toIso8601String());
-      await prefs.setString('last_campaigns_opened', DateTime.now().toIso8601String());
-      print('✅ Bildirimler ve kampanyalar okundu olarak işaretlendi');
+      
+      // Server saatini kullan (timezone problemi önlenir)
+      final serverTime = await _getServerTime();
+      await prefs.setString('last_notifications_opened', serverTime);
+      print('✅ Duyurular okundu olarak işaretlendi: $serverTime');
     } catch (e) {
-      print('❌ Okundu işaretleme hatası: $e');
+      print('❌ Duyuru okundu işaretleme hatası: $e');
     }
+  }
+  
+  // 🔥 KAMPANYALARI OKUNDU OLARAK İŞARETLE
+  Future<void> _markCampaignsAsRead() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      // Mevcut kampanya ID'lerini kaydet
+      final campaignIds = _campaigns.map((c) => c['id'].toString()).toList();
+      await prefs.setStringList('read_campaign_ids', campaignIds);
+      
+      // Tarih de kaydet (eski kampanyalar için)
+      final serverTime = await _getServerTime();
+      await prefs.setString('last_campaigns_opened', serverTime);
+      
+      print('✅ Kampanyalar okundu olarak işaretlendi: ${campaignIds.length} ID');
+      print('   📋 ID\'ler: $campaignIds');
+    } catch (e) {
+      print('❌ Kampanya okundu işaretleme hatası: $e');
+    }
+  }
+  
+  // Server saatini al
+  Future<String> _getServerTime() async {
+    try {
+      final response = await http.get(
+        Uri.parse('https://admin.funbreakvale.com/api/get_server_time.php'),
+      ).timeout(const Duration(seconds: 5));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final serverTime = data['server_time']['iso'];
+        print('⏰ Server saati alındı: $serverTime');
+        return serverTime;
+      }
+    } catch (e) {
+      print('⚠️ Server saati alınamadı, local kullanılıyor: $e');
+    }
+    
+    // Fallback: Local saat
+    return DateTime.now().toIso8601String();
   }
 
   @override

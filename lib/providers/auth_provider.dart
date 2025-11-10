@@ -69,6 +69,20 @@ class AuthProvider with ChangeNotifier {
       print('Session yükleniyor - isLoggedIn: $isLoggedIn');
       
       if (isLoggedIn) {
+        // 🔒 45 GÜNLÜK SESSION KONTROLÜ
+        final loginTimestamp = prefs.getInt('login_timestamp') ?? 0;
+        final currentTime = DateTime.now().millisecondsSinceEpoch;
+        final daysSinceLogin = (currentTime - loginTimestamp) / (1000 * 60 * 60 * 24);
+        
+        if (daysSinceLogin > 45) {
+          // 45 gün geçmiş, oturumu kapat
+          print('⏰ Session süresi doldu (${daysSinceLogin.toStringAsFixed(1)} gün). Çıkış yapılıyor...');
+          await logout();
+          return;
+        }
+        
+        print('✅ Session aktif (${daysSinceLogin.toStringAsFixed(1)} / 45 gün)');
+        
         _userEmail = prefs.getString('user_email');
         _customerName = prefs.getString('user_name');
         _customerPhone = prefs.getString('user_phone');
@@ -89,6 +103,18 @@ class AuthProvider with ChangeNotifier {
     final isLoggedIn = prefs.getBool('is_logged_in') ?? false;
     
     if (isLoggedIn) {
+      // 🔒 45 GÜNLÜK SESSION KONTROLÜ
+      final loginTimestamp = prefs.getInt('login_timestamp') ?? 0;
+      final currentTime = DateTime.now().millisecondsSinceEpoch;
+      final daysSinceLogin = (currentTime - loginTimestamp) / (1000 * 60 * 60 * 24);
+      
+      if (daysSinceLogin > 45) {
+        // 45 gün geçmiş, oturumu kapat
+        print('⏰ Session süresi doldu. Çıkış yapılıyor...');
+        await logout();
+        return false;
+      }
+      
       _userEmail = prefs.getString('user_email');
       _customerName = prefs.getString('user_name');
       _customerPhone = prefs.getString('user_phone');

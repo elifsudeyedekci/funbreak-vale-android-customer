@@ -50,6 +50,15 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         
         if (rideData != null) {
           final status = rideData['status'];
+          
+          // 🔥 ÖDEME TAMAMLANMIŞ YOLCULUKLARI TEMİZLE - ÖDEME EKRANI DÖNGÜSÜNÜ ENGELLE!
+          if (status == 'completed' || status == 'cancelled') {
+            print('✅ [MÜŞTERİ SPLASH] Tamamlanmış/iptal yolculuk - Persistence temizleniyor');
+            await RidePersistenceService.clearActiveRide();
+            _navigateToHome();
+            return;
+          }
+          
           final activeStatuses = ['accepted', 'in_progress', 'driver_arrived', 'ride_started', 'waiting_customer'];
           
           if (activeStatuses.contains(status)) {
@@ -65,9 +74,9 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
               return; // Normal akışa gitmesin
             }
           } else {
-            // Bitmiş yolculuk varsa temizle
+            // Bilinmeyen status varsa temizle
             await RidePersistenceService.clearActiveRide();
-            print('🗑️ [MÜŞTERİ SPLASH] Bitmiş yolculuk persistence temizlendi');
+            print('🗑️ [MÜŞTERİ SPLASH] Bilinmeyen status persistence temizlendi: $status');
           }
         }
       }

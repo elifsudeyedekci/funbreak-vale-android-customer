@@ -5935,10 +5935,55 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
       
       print('📱 API çağrısı tamamlandı: ${campaigns.length} kampanya, ${announcements.length} duyuru');
       
-      // Sadece aktif olanları say 
-      int count = campaigns.length + announcements.length; // Tüm yeni bildirimleri say
+      final prefs = await SharedPreferences.getInstance();
       
-      print('📱 Toplam bildirim count: $count');
+      // 🔥 AYRI AYRI OKUNMA TARİHİ KONTROLÜ
+      final lastAnnouncementsStr = prefs.getString('last_notifications_opened');
+      final lastCampaignsStr = prefs.getString('last_campaigns_opened');
+      
+      DateTime? lastAnnouncementsOpened;
+      DateTime? lastCampaignsOpened;
+      
+      if (lastAnnouncementsStr != null && lastAnnouncementsStr.isNotEmpty) {
+        lastAnnouncementsOpened = DateTime.tryParse(lastAnnouncementsStr);
+      }
+      if (lastCampaignsStr != null && lastCampaignsStr.isNotEmpty) {
+        lastCampaignsOpened = DateTime.tryParse(lastCampaignsStr);
+      }
+
+      int count = 0;
+      
+      // 🔥 DUYURULARI KONTROL ET
+      for (final announcement in announcements) {
+        final rawDate = announcement['date']?.toString() ?? announcement['created_at']?.toString() ?? '';
+        DateTime? itemDate;
+        if (rawDate.isNotEmpty) {
+          itemDate = DateTime.tryParse(rawDate) ?? DateTime.tryParse(rawDate.replaceAll(' ', 'T'));
+        }
+
+        if (lastAnnouncementsOpened == null) {
+          count++;
+        } else if (itemDate != null && itemDate.isAfter(lastAnnouncementsOpened)) {
+          count++;
+        }
+      }
+      
+      // 🔥 KAMPANYALARI KONTROL ET
+      for (final campaign in campaigns) {
+        final rawDate = campaign['date']?.toString() ?? campaign['created_at']?.toString() ?? '';
+        DateTime? itemDate;
+        if (rawDate.isNotEmpty) {
+          itemDate = DateTime.tryParse(rawDate) ?? DateTime.tryParse(rawDate.replaceAll(' ', 'T'));
+        }
+
+        if (lastCampaignsOpened == null) {
+          count++;
+        } else if (itemDate != null && itemDate.isAfter(lastCampaignsOpened)) {
+          count++;
+        }
+      }
+      
+      print('📱 Toplam okunmamış bildirim count: $count');
       return count;
     } catch (e) {
       print('❌ Bildirim sayısı alma hatası: $e');

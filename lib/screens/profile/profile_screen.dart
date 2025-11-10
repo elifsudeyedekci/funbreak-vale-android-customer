@@ -33,17 +33,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   void _loadUserData() async {
+    print('🔍 PROFIL: _loadUserData başladı');
+    
+    final prefs = await SharedPreferences.getInstance();
+    print('🔍 PROFIL: user_id = ${prefs.getString('user_id')}');
+    print('🔍 PROFIL: user_name = ${prefs.getString('user_name')}');
+    print('🔍 PROFIL: user_email = ${prefs.getString('user_email')}');
+    print('🔍 PROFIL: user_phone = ${prefs.getString('user_phone')}');
+    
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    print('🔍 PROFIL: authProvider.customerName = ${authProvider.customerName}');
+    print('🔍 PROFIL: authProvider.customerPhone = ${authProvider.customerPhone}');
+    
     _nameController.text = authProvider.customerName ?? '';
     _phoneController.text = authProvider.customerPhone ?? '';
     _emailController.text = authProvider.userEmail ?? '';
     
     // Araç bilgilerini SharedPreferences'tan yükle
-    final prefs = await SharedPreferences.getInstance();
     _vehicleMakeController.text = prefs.getString('vehicle_make') ?? '';
     _vehicleModelController.text = prefs.getString('vehicle_model') ?? '';
     _vehicleColorController.text = prefs.getString('vehicle_color') ?? '';
     _vehiclePlateController.text = prefs.getString('vehicle_plate') ?? '';
+    
+    print('✅ PROFIL: Bilgiler yüklendi');
   }
 
   Future<void> _pickImage() async {
@@ -237,35 +249,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               themeProvider,
             ),
             
-            const SizedBox(height: 24),
-            
-            // Yasal Linkler
-            Text(
-              'Yasal',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: themeProvider.isDarkMode ? Colors.white : Colors.black,
-              ),
-            ),
-            
-            const SizedBox(height: 16),
-            
-            _buildLegalLink(
-              'Gizlilik Politikası',
-              Icons.privacy_tip,
-              () => _openPrivacyPolicy(),
-              themeProvider,
-            ),
-            
-            const SizedBox(height: 12),
-            
-            _buildLegalLink(
-              'Kullanım Şartları',
-              Icons.description,
-              () => _openTermsOfService(),
-              themeProvider,
-            ),
+            // Yasal linkler KALDIRILDI - Ayarlar bölümünde var
             
             const SizedBox(height: 40),
             
@@ -319,6 +303,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
       child: TextField(
         controller: controller,
+        keyboardType: TextInputType.text,
+        textCapitalization: label.contains('İsim') || label.contains('Ad') 
+            ? TextCapitalization.words 
+            : TextCapitalization.none,
+        enableSuggestions: true,
+        autocorrect: true,
         style: TextStyle(
           color: themeProvider.isDarkMode ? Colors.white : Colors.black,
           fontSize: 16,

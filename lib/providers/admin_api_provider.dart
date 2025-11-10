@@ -423,24 +423,54 @@ class AdminApiProvider extends ChangeNotifier {
     required String rideId,
     required double amount,
     required String paymentMethod,
+    String? discountCode,
+    double? discountAmount,
   }) async {
     try {
+      print('💳 ==========================================');
+      print('💳 ÖDEME TAMAMLAMA API ÇAĞRISI');
+      print('💳 ==========================================');
+      print('👤 Customer ID: $customerId');
+      print('🚗 Ride ID: $rideId');
+      print('💰 Amount: ₺$amount');
+      print('💳 PAYMENT METHOD (ÇOK ÖNEMLİ!): "$paymentMethod"');
+      if (discountCode != null && discountAmount != null && discountAmount > 0) {
+        print('🎁 DISCOUNT CODE: $discountCode, İndirim: ₺$discountAmount');
+      }
+      print('🌐 URL: $baseUrl/complete_payment.php');
+      print('💳 ==========================================');
+      
+      final requestBody = {
+        'customer_id': customerId,
+        'ride_id': rideId,
+        'amount': amount,
+        'payment_method': paymentMethod,
+      };
+      
+      // 🎁 İndirim varsa ekle
+      if (discountCode != null && discountAmount != null && discountAmount > 0) {
+        requestBody['discount_code'] = discountCode;
+        requestBody['discount_amount'] = discountAmount;
+      }
+      
+      print('📤 Request Body: ${jsonEncode(requestBody)}');
+      
       final response = await http.post(
         Uri.parse('$baseUrl/complete_payment.php'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'customer_id': customerId,
-          'ride_id': rideId,
-          'amount': amount,
-          'payment_method': paymentMethod,
-        }),
+        body: jsonEncode(requestBody),
       ).timeout(const Duration(seconds: 15));
+
+      print('📥 Response Status: ${response.statusCode}');
+      print('📥 Response Body: ${response.body}');
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         
         if (data['success'] == true) {
-          print('✅ Ödeme başarıyla tamamlandı: ₺$amount');
+          print('✅ Ödeme başarıyla tamamlandı: ₺$amount, Method: $paymentMethod');
+        } else {
+          print('❌ Ödeme başarısız: ${data['message']}');
         }
         
         return data;
@@ -448,6 +478,7 @@ class AdminApiProvider extends ChangeNotifier {
         return {'success': false, 'message': 'Sunucu hatası'};
       }
     } catch (e) {
+      print('❌ Ödeme API hatası: $e');
       return {'success': false, 'message': 'Ödeme hatası: $e'};
     }
   }

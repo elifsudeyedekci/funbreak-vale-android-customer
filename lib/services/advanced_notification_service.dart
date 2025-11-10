@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:ui';
+import 'dart:async';
+import 'dart:typed_data'; // 🔥 Int64List için!
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +12,8 @@ class AdvancedNotificationService {
   static const String baseUrl = 'https://admin.funbreakvale.com/api';
   static final FlutterLocalNotificationsPlugin _localNotifications = FlutterLocalNotificationsPlugin();
   static FirebaseMessaging? _messaging;
+  static bool _initialized = false; // 🔥 Sadece 1 kez initialize
+  static StreamSubscription<RemoteMessage>? _foregroundSubscription; // 🔥 Listener kontrolü
   
   // MÜŞTERİ BİLDİRİM TÜRLERİ
   static const Map<String, NotificationConfig> _customerNotifications = {
@@ -21,8 +26,8 @@ class AdvancedNotificationService {
     'driver_departed': NotificationConfig(
       title: '🚗 Vale Yola Çıktı',
       channelId: 'ride_updates',
-      priority: 'normal',
-      sound: 'default',
+      priority: 'high',
+      sound: 'notification.wav',
     ),
     'driver_approaching_5km': NotificationConfig(
       title: '📍 Vale Yaklaşıyor',
@@ -49,15 +54,15 @@ class AdvancedNotificationService {
       sound: 'notification.wav',
     ),
     'ride_started': NotificationConfig(
-      title: '▶️ Yolculuk Başladı',
-      channelId: 'ride_updates',
-      priority: 'normal',
-      sound: 'default',
+      title: '🚗 Yolculuğunuz Başladı!',
+      channelId: 'funbreak_rides',
+      priority: 'high',
+      sound: 'notification.wav',
     ),
     'ride_completed': NotificationConfig(
       title: '✅ Yolculuk Tamamlandı',
       channelId: 'ride_updates',
-      priority: 'normal',
+      priority: 'high',
       sound: 'notification.wav',
     ),
     'payment_processed': NotificationConfig(
@@ -71,6 +76,12 @@ class AdvancedNotificationService {
   
   // SERVİS BAŞLATMA
   static Future<void> initialize() async {
+    // 🔥 ZATEN BAŞLATILDIYSA ATLA!
+    if (_initialized) {
+      print('⏭️ Bildirim servisi zaten başlatıldı - atlanıyor');
+      return;
+    }
+    
     try {
       print('🔔 Gelişmiş bildirim servisi başlatılıyor...');
       
@@ -92,11 +103,14 @@ class AdvancedNotificationService {
       // Permission iste
       await _requestPermissions();
       
-      // Background message handler
-      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+      // Background handler main.dart'ta kayıtlı
       
-      // Foreground message handler
-      FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+      // 🔥 ESKİ LISTENER'I İPTAL ET!
+      await _foregroundSubscription?.cancel();
+      
+      // Foreground message handler - SADECE BİR KERE!
+      _foregroundSubscription = FirebaseMessaging.onMessage.listen(_onForegroundMessage);
+      print('✅ Foreground listener kayıtlı - ID: ${_foregroundSubscription.hashCode}');
       
       // App açılışında notification handler
       FirebaseMessaging.onMessageOpenedApp.listen(_onMessageOpenedApp);
@@ -107,6 +121,7 @@ class AdvancedNotificationService {
       // Topic'lere subscribe
       await _subscribeToTopics();
       
+      _initialized = true; // 🔥 BAŞARILDI OLARAK İŞARETLE!
       print('✅ Gelişmiş bildirim servisi hazır!');
       
     } catch (e) {
@@ -114,41 +129,81 @@ class AdvancedNotificationService {
     }
   }
   
-  // ANDROID BİLDİRİM KANALLARI
+  // ANDROID BİLDİRİM KANALLARI - HEADS-UP İÇİN DÜZELTME!
   static Future<void> _createNotificationChannels() async {
-    const List<AndroidNotificationChannel> channels = [
-      AndroidNotificationChannel(
-        'ride_updates',
-        'Yolculuk Güncellemeleri',
-        description: 'Vale durumu ve yolculuk güncellemeleri',
-        importance: Importance.high,
-        playSound: true,
-        sound: RawResourceAndroidNotificationSound('notification'),
-      ),
-      AndroidNotificationChannel(
-        'location_updates', 
-        'Konum Güncellemeleri',
-        description: 'Vale konum ve mesafe bildirimleri',
-        importance: Importance.high,
-        playSound: true,
-        sound: RawResourceAndroidNotificationSound('notification'),
-      ),
-      AndroidNotificationChannel(
-        'payment_updates',
-        'Ödeme Bildirimleri', 
-        description: 'Ödeme ve fatura bilgileri',
-        importance: Importance.defaultImportance,
-        playSound: true,
-      ),
-      // campaigns kanalı kaldırıldı - mevcut sistem kullanılıyor
-    ];
+    print('🔔 [MÜŞTERİ] CHANNEL OLUŞTURMA BAŞLADI!');
+    final androidPlugin = _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
     
-    for (final channel in channels) {
-      await _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
-          ?.createNotificationChannel(channel);
+    if (androidPlugin == null) {
+      print('❌ [MÜŞTERİ] AndroidFlutterLocalNotificationsPlugin NULL!');
+      return;
     }
     
-    print('✅ ${channels.length} bildirim kanalı oluşturuldu');
+    print('🗑️ [MÜŞTERİ] Eski channellar siliniyor...');
+    // Önce eski kanalları sil
+    await androidPlugin.deleteNotificationChannel('funbreak_rides');
+    await androidPlugin.deleteNotificationChannel('ride_updates');
+    await androidPlugin.deleteNotificationChannel('location_updates');
+    await androidPlugin.deleteNotificationChannel('payment_updates');
+    
+    const List<AndroidNotificationChannel> channels = [
+      AndroidNotificationChannel(
+        'funbreak_rides_v2',
+        'Yolculuk Bildirimleri',
+        description: 'Yolculuk başlatma ve durum bildirimleri',
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('notification'),
+        enableVibration: true,
+        enableLights: true,
+        ledColor: Color(0xFFFFD700),
+        showBadge: true,
+      ),
+      AndroidNotificationChannel(
+        'ride_updates_v2',
+        'Yolculuk Güncellemeleri',
+        description: 'Vale durumu ve yolculuk güncellemeleri',
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('notification'),
+        enableVibration: true,
+        enableLights: true,
+        ledColor: Color(0xFFFFD700),
+        showBadge: true,
+      ),
+      AndroidNotificationChannel(
+        'location_updates_v3',  // 🔥 V3 - SES CACHE FIX!
+        'Konum Güncellemeleri',
+        description: 'Vale konum ve mesafe bildirimleri',
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('notification'),
+        enableVibration: true,
+        enableLights: true,
+        ledColor: Color(0xFFFFD700),
+        showBadge: true,
+      ),
+      AndroidNotificationChannel(
+        'payment_updates_v2',
+        'Ödeme Bildirimleri', 
+        description: 'Ödeme ve fatura bilgileri',
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('notification'),
+        enableVibration: true,
+        enableLights: true,
+        ledColor: Color(0xFFFFD700),
+        showBadge: true,
+      ),
+    ];
+    
+    print('🔨 [MÜŞTERİ] ${channels.length} channel oluşturuluyor...');
+    for (final channel in channels) {
+      await androidPlugin.createNotificationChannel(channel);
+      print('  ✅ Channel: ${channel.id} (Importance: ${channel.importance})');
+    }
+    
+    print('✅ [MÜŞTERİ] ${channels.length} bildirim kanalı OLUŞTURULDU (IMPORTANCE MAX!)');
   }
   
   // İZİN İSTEME
@@ -182,10 +237,45 @@ class AdvancedNotificationService {
     await _showLocalNotification(message);
   }
   
+  // PUBLIC BACKGROUND NOTIFICATION - main.dart'tan çağrılabilir!
+  static Future<void> showBackgroundNotification(RemoteMessage message) async {
+    print('🔔 [MÜŞTERİ BACKGROUND] showBackgroundNotification çağrıldı');
+    await _showLocalNotification(message);
+  }
+  
   // FOREGROUND MESSAGE HANDLER
   static Future<void> _onForegroundMessage(RemoteMessage message) async {
-    print('🔔 Foreground mesaj alındı: ${message.notification?.title}');
-    await _showLocalNotification(message);
+    print('🔔 [MÜŞTERİ FOREGROUND] Mesaj alındı: ${message.messageId}');
+    print('   📊 Data: ${message.data}');
+    print('   📋 Notification: ${message.notification?.title ?? "YOK"}');
+    
+    // 🔥 DATA-ONLY mesajlar için notification oluştur!
+    RemoteMessage finalMessage = message;
+    if (message.notification == null && message.data.isNotEmpty) {
+      print('   🔥 DATA-ONLY mesaj - notification oluşturuluyor...');
+      final title = message.data['title'] ?? 'FunBreak Vale';
+      final body = message.data['body'] ?? 'Yeni bildirim';
+      
+      // Fake notification ekle
+      finalMessage = RemoteMessage(
+        senderId: message.senderId,
+        category: message.category,
+        collapseKey: message.collapseKey,
+        contentAvailable: message.contentAvailable,
+        data: message.data,
+        from: message.from,
+        messageId: message.messageId,
+        messageType: message.messageType,
+        mutableContent: message.mutableContent,
+        notification: RemoteNotification(title: title, body: body),
+        sentTime: message.sentTime,
+        threadId: message.threadId,
+        ttl: message.ttl,
+      );
+      print('   ✅ Notification eklendi: $title');
+    }
+    
+    await _showLocalNotification(finalMessage);
   }
   
   // NOTIFICATION TAP HANDLER
@@ -215,26 +305,100 @@ class AdvancedNotificationService {
   // LOCAL BİLDİRİM GÖSTER
   static Future<void> _showLocalNotification(RemoteMessage message) async {
     final notification = message.notification;
+    
+    // 🔥 HER ZAMAN BİZİM LOCAL'İ GÖSTER - HEADS-UP GARANTİLİ!
     if (notification != null) {
-      const NotificationDetails details = NotificationDetails(
+      print('✅ [MÜŞTERİ] Local notification gösteriliyor (heads-up garantisi için)');
+      // FCM de gösterebilir ama bizimki daha agresif - heads-up olur!
+      
+      // 🔥 HER BİLDİRİM TİPİ İÇİN AYRI CHANNEL - ANDROID RATE-LIMIT BYPASS!
+      final notificationType = message.data['type'] ?? message.data['notification_type'] ?? '';
+      String channelId;
+      String channelName;
+      String channelDesc;
+      
+      if (notificationType == 'driver_found') {
+        channelId = 'ride_updates_v2'; // ✅ YENİ CHANNEL!
+        channelName = 'Yolculuk Güncellemeleri';
+        channelDesc = 'Vale bulundu bildirimleri';
+      } else if (notificationType == 'ride_started') {
+        channelId = 'location_updates_v3'; // 🔥 V3 - SES FIX!
+        channelName = 'Konum Güncellemeleri';
+        channelDesc = 'Yolculuk başlatma bildirimleri';
+      } else if (notificationType == 'ride_completed') {
+        channelId = 'payment_updates_v2'; // ✅ YENİ CHANNEL!
+        channelName = 'Ödeme Bildirimleri';
+        channelDesc = 'Yolculuk tamamlanma bildirimleri';
+      } else {
+        channelId = 'funbreak_rides_v2'; // Diğerleri
+        channelName = 'Yolculuk Bildirimleri';
+        channelDesc = 'Genel yolculuk bildirimleri';
+      }
+      
+      final currentTime = DateTime.now().millisecondsSinceEpoch;
+      
+      // 🔥 UNIQUE ID - Milisaniye + microseconds + hash
+      final timestamp = DateTime.now();
+      final uniqueId = (timestamp.millisecondsSinceEpoch + timestamp.microsecond).hashCode.abs() % 2147483647;
+      
+      // 🔥 HER BİLDİRİM İÇİN FARKLI TİTREŞİM!
+      final vibrationPattern = Int64List.fromList([0, 250 + (uniqueId % 200), 250, 250]);
+      
+      // 🔥 BigTextStyle ile dikkat çekici bildirim
+      final BigTextStyleInformation bigTextStyle = BigTextStyleInformation(
+        notification.body ?? '',
+        contentTitle: notification.title,
+        htmlFormatContentTitle: true,
+        htmlFormatBigText: true,
+      );
+      
+      final NotificationDetails details = NotificationDetails(
         android: AndroidNotificationDetails(
-          'ride_updates',
-          'Yolculuk Güncellemeleri',
-          channelDescription: 'Vale durumu ve yolculuk güncellemeleri',
-          importance: Importance.high,
-          priority: Priority.high,
-          sound: RawResourceAndroidNotificationSound('notification'),
+          channelId,
+          channelName,
+          channelDescription: channelDesc,
+          importance: Importance.max,
+          priority: Priority.max,
+          // sound: SYSTEM DEFAULT kullan - custom ses dosyası yok
           icon: '@mipmap/ic_launcher',
+          playSound: true,
+          enableVibration: true,
+          visibility: NotificationVisibility.public,
+          showWhen: true,
+          when: currentTime,
+          ticker: '${notification.title} - $uniqueId', // 🔥 Her bildirim FARKLI ticker
+          autoCancel: true, 
+          onlyAlertOnce: false, // 🔥 Her seferinde uyar
+          enableLights: true,
+          ledColor: const Color(0xFFFFD700),
+          ledOnMs: 1000,
+          ledOffMs: 500,
+          category: AndroidNotificationCategory.call, // 🔥 Heads-up için
+          groupKey: 'funbreak_$uniqueId', // 🔥 Her bildirim KENDİ GRUBU!
+          setAsGroupSummary: false,
+          styleInformation: bigTextStyle,
+          tag: 'notification_$uniqueId', // 🔥 Her bildirim unique tag!
+          channelShowBadge: true,
+          vibrationPattern: vibrationPattern, // 🔥 HER BİLDİRİM FARKLI TİTREŞİR!
+          timeoutAfter: null, // 🔥 Timeout yok
         ),
       );
       
+      // 🔥 UNIQUE ID İLE HER BİLDİRİM AYRI!
       await _localNotifications.show(
-        notification.hashCode,
+        uniqueId,
         notification.title,
         notification.body,
         details,
         payload: jsonEncode(message.data),
       );
+      
+      print('🔔 BİLDİRİM GÖSTERİLDİ:');
+      print('   ID: $uniqueId (UNIQUE - timestamp)');
+      print('   Kanal: $channelId');
+      print('   Başlık: ${notification.title}');
+      print('   Type: $notificationType');
+      print('   Ses: ✅ Titreşim: ✅ LED: ✅ Importance: MAX');
     }
   }
   

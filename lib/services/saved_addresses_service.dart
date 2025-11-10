@@ -1,14 +1,60 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 
 class SavedAddressesService {
   static const String _savedAddressesKey = 'saved_addresses';
   static const String _favoriteAddressesKey = 'favorite_addresses';
+  static const String baseUrl = 'https://admin.funbreakvale.com/api';
   
-  // Kayıtlı adresleri al
+  // Kayıtlı adresleri al (Backend + Local Sync)
   static Future<List<SavedAddress>> getSavedAddresses() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final customerId = prefs.getString('admin_user_id') ?? prefs.getString('customer_id');
+      
+      if (customerId != null) {
+        // Backend'den çek
+        try {
+          final response = await http.get(
+            Uri.parse('$baseUrl/get_saved_addresses.php?customer_id=$customerId'),
+          ).timeout(const Duration(seconds: 10));
+          
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            if (data['success'] == true) {
+              final List<dynamic> addressesList = data['addresses'] ?? [];
+              List<SavedAddress> addresses = addressesList.map((json) {
+                // Backend formatını Flutter formatına çevir
+                return SavedAddress(
+                  id: json['id']?.toString() ?? '',
+                  name: json['name']?.toString() ?? '',
+                  address: json['address']?.toString() ?? '',
+                  latitude: (json['latitude'] is num) ? json['latitude'].toDouble() : 0.0,
+                  longitude: (json['longitude'] is num) ? json['longitude'].toDouble() : 0.0,
+                  description: json['description']?.toString(),
+                  type: _parseAddressType(json['type']?.toString()),
+                  isFavorite: json['is_favorite'] == 1 || json['is_favorite'] == true,
+                  createdAt: _parseDateTime(json['created_at']) ?? DateTime.now(),
+                  lastUsedAt: _parseDateTime(json['last_used_at']) ?? DateTime.now(),
+                  usageCount: json['usage_count'] ?? 0,
+                );
+              }).toList();
+              
+              // Local'e de kaydet (cache)
+              final addressesJson = json.encode(addresses.map((addr) => addr.toJson()).toList());
+              await prefs.setString(_savedAddressesKey, addressesJson);
+              
+              print('✅ Backend\'den ${addresses.length} adres yüklendi');
+              return addresses;
+            }
+          }
+        } catch (e) {
+          print('⚠️ Backend\'den yüklenemedi, local cache kullanılıyor: $e');
+        }
+      }
+      
+      // Fallback: Local'den çek
       final addressesJson = prefs.getString(_savedAddressesKey);
       
       if (addressesJson == null) {
@@ -21,20 +67,58 @@ class SavedAddressesService {
           .map((json) => SavedAddress.fromJson(json))
           .toList();
       
-      // Tarihe göre sırala (en yeni önce)
       addresses.sort((a, b) => b.createdAt.compareTo(a.createdAt));
       
-      print('${addresses.length} kayıtlı adres yüklendi');
+      print('📱 Local\'den ${addresses.length} kayıtlı adres yüklendi');
       return addresses;
     } catch (e) {
-      print('Kayıtlı adres yükleme hatası: $e');
+      print('❌ Kayıtlı adres yükleme hatası: $e');
       return [];
     }
   }
   
-  // Adres kaydet
+  // Adres kaydet (Backend + Local)
   static Future<bool> saveAddress(SavedAddress address) async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      final customerId = prefs.getString('admin_user_id') ?? prefs.getString('customer_id');
+      
+      if (customerId != null) {
+        // Backend'e kaydet
+        try {
+          final response = await http.post(
+            Uri.parse('$baseUrl/save_address.php'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'customer_id': customerId,
+              'name': address.name,
+              'address': address.address,
+              'description': address.description,
+              'latitude': address.latitude,
+              'longitude': address.longitude,
+              'type': address.type.toString().split('.').last,
+              'is_favorite': address.isFavorite ? 1 : 0,
+            }),
+          ).timeout(const Duration(seconds: 10));
+          
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            if (data['success'] == true) {
+              print('✅ Adres backend\'e kaydedildi: ${address.name}');
+              
+              // Local cache'i güncelle
+              await getSavedAddresses();
+              return true;
+            } else {
+              print('⚠️ Backend kayıt başarısız: ${data['message']}');
+            }
+          }
+        } catch (e) {
+          print('⚠️ Backend hatası, local\'e kaydediliyor: $e');
+        }
+      }
+      
+      // Fallback veya backend hata: Local'e kaydet
       final addresses = await getSavedAddresses();
       
       // Aynı adres var mı kontrol et
@@ -48,48 +132,69 @@ class SavedAddressesService {
         return false;
       }
       
-      addresses.insert(0, address); // En başa ekle
+      addresses.insert(0, address);
       
-      // Maksimum 50 adres tut
       if (addresses.length > 50) {
         addresses.removeRange(50, addresses.length);
       }
       
-      final prefs = await SharedPreferences.getInstance();
       final addressesJson = json.encode(addresses.map((addr) => addr.toJson()).toList());
-      
       bool success = await prefs.setString(_savedAddressesKey, addressesJson);
       
       if (success) {
-        print('Adres kaydedildi: ${address.name}');
+        print('📱 Adres local\'e kaydedildi: ${address.name}');
       }
       
       return success;
     } catch (e) {
-      print('Adres kaydetme hatası: $e');
+      print('❌ Adres kaydetme hatası: $e');
       return false;
     }
   }
   
-  // Adres sil
+  // Adres sil (Backend + Local)
   static Future<bool> deleteAddress(String addressId) async {
     try {
-      final addresses = await getSavedAddresses();
+      final prefs = await SharedPreferences.getInstance();
+      final customerId = prefs.getString('admin_user_id') ?? prefs.getString('customer_id');
       
+      // Backend'den sil
+      if (customerId != null && int.tryParse(addressId) != null) {
+        try {
+          final response = await http.post(
+            Uri.parse('$baseUrl/delete_saved_address.php'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'address_id': int.parse(addressId),
+              'customer_id': customerId,
+            }),
+          ).timeout(const Duration(seconds: 10));
+          
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body);
+            if (data['success'] == true) {
+              print('✅ Adres backend\'den silindi: $addressId');
+            }
+          }
+        } catch (e) {
+          print('⚠️ Backend silme hatası: $e');
+        }
+      }
+      
+      // Local'den de sil
+      final addresses = await getSavedAddresses();
       addresses.removeWhere((addr) => addr.id == addressId);
       
-      final prefs = await SharedPreferences.getInstance();
       final addressesJson = json.encode(addresses.map((addr) => addr.toJson()).toList());
-      
       bool success = await prefs.setString(_savedAddressesKey, addressesJson);
       
       if (success) {
-        print('Adres silindi: $addressId');
+        print('📱 Adres local\'den silindi: $addressId');
       }
       
       return success;
     } catch (e) {
-      print('Adres silme hatası: $e');
+      print('❌ Adres silme hatası: $e');
       return false;
     }
   }
@@ -244,6 +349,39 @@ class SavedAddressesService {
       print('Adres arama hatası: $e');
       return [];
     }
+  }
+  
+  // Helper: AddressType parse
+  static AddressType _parseAddressType(String? typeStr) {
+    if (typeStr == null) return AddressType.other;
+    
+    switch (typeStr.toLowerCase()) {
+      case 'home':
+        return AddressType.home;
+      case 'work':
+        return AddressType.work;
+      case 'other':
+        return AddressType.other;
+      default:
+        return AddressType.other;
+    }
+  }
+  
+  // Helper: DateTime parse
+  static DateTime? _parseDateTime(dynamic value) {
+    if (value == null) return null;
+    
+    try {
+      if (value is String) {
+        return DateTime.parse(value);
+      } else if (value is int) {
+        return DateTime.fromMillisecondsSinceEpoch(value);
+      }
+    } catch (e) {
+      print('⚠️ DateTime parse hatası: $value');
+    }
+    
+    return null;
   }
 }
 

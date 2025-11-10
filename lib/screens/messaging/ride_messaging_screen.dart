@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // 🔥 SERVICES IMPORT!
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -33,6 +34,14 @@ class _RideMessagingScreenState extends State<RideMessagingScreen> {
   @override
   void initState() {
     super.initState();
+    
+    // 🔥 CONTROLLER DEBUG - HER KARAKTER GİRİŞİNDE LOGLA!
+    _messageController.addListener(() {
+      print('🔍 CONTROLLER İÇERİK: "${_messageController.text}"');
+      print('🔍 UZUNLUK: ${_messageController.text.length}');
+      print('🔍 BYTES: ${_messageController.text.codeUnits}');
+    });
+    
     _loadMessages();
     _setupMessageRefresh();
     _setupFirebaseListener();
@@ -377,20 +386,16 @@ class _RideMessagingScreenState extends State<RideMessagingScreen> {
                   color: Colors.grey[100],
                   borderRadius: BorderRadius.circular(25),
                 ),
-                child: TextField(
+                child: TextFormField(
                   controller: _messageController,
-                  keyboardType: TextInputType.multiline, // 🔥 Türkçe karakter desteği
-                  textInputAction: TextInputAction.newline,
                   decoration: const InputDecoration(
-                    hintText: 'Mesajınızı yazın...',
+                    hintText: 'TEST: ş ğ ü ı ö ç yazın...',
                     border: InputBorder.none,
                     contentPadding: EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 12,
                     ),
                   ),
-                  maxLines: null,
-                  onSubmitted: (_) => _sendMessage(),
                 ),
               ),
             ),

@@ -962,24 +962,9 @@ class _AddAddressScreenState extends State<AddAddressScreen> {
               ),
             ],
             
-            const SizedBox(height: 16),
+            // Arama modalında "Haritadan Seç" yok - sadece arama sonuçları
             
-            // HARITA SEÇENEĞİ
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: _buildLocationOption(
-                  icon: Icons.map,
-                  title: 'Haritadan Seç',
-                  subtitle: 'Harita üzerinden konum belirleyin',
-                  onTap: () {
-                    Navigator.pop(context);
-                    _selectFromMap();
-                  },
-                  themeProvider: themeProvider,
-                ),
-              ),
-            ),
+            const SizedBox(height: 40),
           ],
         ),
       ),
@@ -1166,23 +1151,42 @@ class _AddAddressScreenState extends State<AddAddressScreen> {
     );
   }
 
-  // Duplicate metod silindi - üstte zaten tanımlı
-  
-  void _selectFromMap() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => MapLocationPicker(
-          onLocationSelected: (location, address) {
-            setState(() {
-              _selectedLocation = location;
-              _selectedAddress = address;
-            });
-          },
-          initialLocation: _selectedLocation,
+  // HARİTADAN SEÇ - ANLIK KONUM İLE BAŞLAT!
+  void _selectFromMap() async {
+    try {
+      // Anlık konumu al
+      LatLng? currentLocation;
+      
+      try {
+        final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        ).timeout(const Duration(seconds: 5));
+        
+        currentLocation = LatLng(position.latitude, position.longitude);
+        print('📍 Anlık konum alındı: ${position.latitude}, ${position.longitude}');
+      } catch (e) {
+        print('⚠️ Anlık konum alınamadı: $e - Varsayılan kullanılacak');
+        currentLocation = _selectedLocation ?? const LatLng(41.0082, 28.9784); // İstanbul
+      }
+      
+      final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => MapLocationPicker(
+            initialLocation: currentLocation, // ANLIK KONUM İLE BAŞLAT!
+            onLocationSelected: (location, address) {
+              setState(() {
+                _selectedLocation = location;
+                _selectedAddress = address;
+                _nameController.text = address.split(',').first; // İlk kısmı başlık yap
+              });
+            },
+          ),
         ),
-      ),
-    );
+      );
+    } catch (e) {
+      print('❌ Harita seçme hatası: $e');
+    }
   }
 
   Future<void> _saveAddress() async {

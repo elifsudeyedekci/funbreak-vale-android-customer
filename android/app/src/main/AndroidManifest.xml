@@ -13,12 +13,22 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="com.google.android.c2dm.permission.RECEIVE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" /> <!-- 🔥 HEADS-UP İÇİN! -->
     
     <application
         android:label="FunBreak Vale"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:enableOnBackInvokedCallback="true">
+        android:enableOnBackInvokedCallback="true"
+        android:supportsRtl="true"
+        android:allowBackup="true"
+        android:fullBackupContent="true"
+        android:extractNativeLibs="true">
+        
+        <!-- 🇹🇷 TÜRKÇE DİL VE KARAKTER DESTEĞİ -->
+        <meta-data
+            android:name="android.app.default_locale"
+            android:value="tr" />
         
         <!-- Google Maps API Key -->
         <meta-data
@@ -36,9 +46,10 @@
             android:value="1:842813355945:android:1234567890abcdef" />
             
         <!-- Firebase Configuration - MODERN NOTIFICATION! -->
+        <!-- 🔥 FCM BİLDİRİMLERİ İÇİN DEFAULT CHANNEL -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="funbreak_vale_channel" />
+            android:value="funbreak_rides" />
             
         <!-- Firebase Default Notification Icon - MODERN GÖRÜNÜM! -->
         <meta-data
@@ -57,7 +68,22 @@
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
+            android:windowSoftInputMode="adjustResize|stateVisible"
+            android:supportsRtl="true"
+            android:usesCleartextTraffic="true"
+            android:imeOptions="flagNoExtractUi|actionDone"
+            android:inputType="textNoSuggestions"
+            android:textDirection="locale">
+            
+            <!-- 🔥 TÜRKÇE KARAKTER İÇİN LOCALE AYARI -->
+            <meta-data
+              android:name="android.app.locale"
+              android:value="tr-TR" />
+            
+            <!-- 🔥 KLAVYE AYARLARI -->
+            <meta-data
+              android:name="android.support.PARENT_ACTIVITY"
+              android:value=".MainActivity" />
             
             <!-- Specifies an Android theme to apply to this Activity as soon as
                  the Android process has started. This theme is visible to the user
@@ -78,6 +104,7 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        
             
         <!-- Firebase Messaging Service -->
         <service

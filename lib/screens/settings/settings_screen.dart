@@ -8,9 +8,10 @@ import '../addresses/saved_addresses_screen.dart';
 import '../billing/billing_screen.dart';
 import '../payment/payment_methods_screen.dart';
 import '../profile/profile_screen.dart';
-import '../security/security_center_screen.dart';
+// import '../security/security_center_screen.dart'; // KALDIRILDI - Şifre girişi yok
 import '../../providers/language_provider.dart';
 import '../../services/dynamic_contact_service.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({Key? key}) : super(key: key);
@@ -179,19 +180,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 );
               },
             ),
-            _buildSettingTile(
-              icon: Icons.security,
-              title: 'Güvenlik Merkezi',
-              subtitle: 'Şifre değişimi ve güvenlik ayarları',
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (context) => const SecurityCenterScreen(),
-                  ),
-                );
-              },
-            ),
+            
+            // Güvenlik Merkezi KALDIRILDI - Şifre girişi olmadığı için gerek yok
             
             // Uygulama ayarları
             _buildSectionTitle('Uygulama'),
@@ -242,7 +232,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             _buildSettingTile(
               icon: Icons.description_outlined,
-              title: 'Kullanım Koşulları',
+              title: 'Kullanım Şartları',
               onTap: () => _openTermsOfUse(),
             ),
             
@@ -483,58 +473,106 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void _showHelpDialog() {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Yardım Merkezi',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.9,
+        minChildSize: 0.5,
+        maxChildSize: 0.95,
+        builder: (context, scrollController) => Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    'Yardım Merkezi',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 20),
+              const SizedBox(height: 12),
+              Expanded(
+                child: ListView(
+                  controller: scrollController,
+                  children: [
             _buildHelpItem(
               'Vale nasıl çağırılır?',
-              'Ana sayfada başlangıç ve varış noktalarını seçin, zaman dilimini belirleyin ve "Vale Çağır" butonuna basın.',
+              'Ana sayfada "Nereden" ve "Nereye" konumlarını seçin. Hizmet türünü belirleyin (Normal Vale veya Saatlik Paket). "Vale Çağır" butonuna basın. Sistem otomatik olarak size en yakın valeyi bulacaktır.',
               Icons.local_taxi,
             ),
             _buildHelpItem(
               'Fiyatlandırma nasıl hesaplanır?',
-              'Fiyatlar mesafe ve zaman dilimine göre dinamik olarak hesaplanır.',
-              Icons.attach_money,
+              '• Mesafe bazlı: KM aralığına göre fiyatlandırma\n  - 0-5 km\n  - 6-10 km\n  - 11-15 km\n  - 15+ km\n• Bekleme ücreti: İlk 15 dk ücretsiz, sonrası her 15 dk = ₺200\n• Saatlik paketler: 2 saat geçince otomatik paket\n  - 0-4 saat: ₺3,000\n  - 4-8 saat: ₺4,500\n  - 8-12 saat: ₺6,000',
+              Icons.currency_lira,
             ),
             _buildHelpItem(
               'Ödeme yöntemleri nelerdir?',
-              'Kredi kartı, banka kartı ve dijital cüzdan ile ödeme yapabilirsiniz.',
+              '• Kredi/Banka Kartı: Yolculuk sonunda ödeme yapılır\n• Havale/EFT: Banka hesabımıza havale yapabilirsiniz. Havale yapıldıktan sonra sistem tarafından otomatik onaylanır',
               Icons.payment,
             ),
             _buildHelpItem(
               'İptal ve iade koşulları',
-              'Vale gelmeden önce ücretsiz iptal edebilirsiniz. Vale yola çıktıktan sonra iptal ücreti uygulanır.',
+              '• Vale bulunamadan önce: Ücretsiz iptal\n• Vale atandıktan sonra yolculuğun başlamasına 45 dakika veya daha az kalmışsa: ₺1500 iptal ücreti tahsil edilir\n• Vale yola çıktıktan sonra: Tam ücret tahsil edilir\n• Sistem tarafından otomatik iptal durumlarında tam iade yapılır',
               Icons.cancel,
             ),
             _buildHelpItem(
-              'Güvenlik ve sigorta',
-              'Tüm valelerimiz lisanslı ve sigortalıdır. Araçlarınız tam kapsamlı sigorta ile korunmaktadır.',
+              'Rezervasyon nasıl yapılır?',
+              'Vale çağırırken "Zamanlanmış" seçeneğini işaretleyin. Tarih ve saat seçin. 2 saat önceden sistem otomatik olarak vale aramaya başlar.',
+              Icons.schedule,
+            ),
+            _buildHelpItem(
+              'Aktif yolculuğu nasıl takip ederim?',
+              'Valeyi kabul ettikten sonra canlı haritada konumunu görebilirsiniz. Köprü arama sistemi ile vale ile iletişime geçebilirsiniz. Mesajlaşma özelliği ile sesli mesaj ve fotoğraf gönderebilirsiniz.',
+              Icons.map,
+            ),
+            _buildHelpItem(
+              'Özel konum ücretleri nelerdir?',
+              'Belirli bölgelerde ek ücret uygulanır:\n• Göktürk: +₺200\n• Diğer özel konumlar için güncel fiyat listesi uygulamada gösterilir',
+              Icons.location_on,
+            ),
+            _buildHelpItem(
+              'Güvenlik önlemleri nelerdir?',
+              'Tüm valelerimiz kimlik doğrulamasından ve üst düzey eğitimlerden geçmiştir. Tüm yolculuklar GPS ile takip edilir. 7/24 destek hattımız aktiftir.',
               Icons.security,
             ),
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () {
-                  Navigator.pop(context);
-                },
-                child: const Text('Destek Ekibiyle İletişime Geç'),
+                    const SizedBox(height: 20),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _showContactBottomSheet();
+                          },
+                          icon: const Icon(Icons.support_agent),
+                          label: const Text('Destek Ekibiyle İletişime Geç'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFFFD700),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.all(16),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -604,12 +642,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               title: const Text('Telefon'),
               subtitle: Text(DynamicContactService.getSupportPhone()),
-              onTap: () async {
-                final phoneUrl = DynamicContactService.getPhoneUrl();
-                if (await canLaunchUrl(Uri.parse(phoneUrl))) {
-                  await launchUrl(Uri.parse(phoneUrl));
-                }
-              },
+              onTap: () => _confirmAndCall(),
             ),
             ListTile(
               leading: Container(
@@ -622,15 +655,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               title: const Text('E-posta'),
               subtitle: Text(DynamicContactService.getSupportEmail()),
-              onTap: () async {
-                final emailUrl = DynamicContactService.getEmailUrl(
-                  subject: 'FunBreak Vale Destek',
-                  body: 'Merhaba, yardıma ihtiyacım var...',
-                );
-                if (await canLaunchUrl(Uri.parse(emailUrl))) {
-                  await launchUrl(Uri.parse(emailUrl));
-                }
-              },
+              onTap: () => _confirmAndEmail(),
             ),
             ListTile(
               leading: Container(
@@ -643,19 +668,128 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               title: const Text('WhatsApp'),
               subtitle: Text(DynamicContactService.getWhatsAppNumber()),
-              onTap: () async {
-                final whatsappUrl = DynamicContactService.getWhatsAppUrl(
-                  message: 'Merhaba, FunBreak Vale ile ilgili yardıma ihtiyacım var.',
-                );
-                if (await canLaunchUrl(Uri.parse(whatsappUrl))) {
-                  await launchUrl(Uri.parse(whatsappUrl));
-                }
-              },
+              onTap: () => _confirmAndWhatsApp(),
             ),
           ],
         ),
       ),
     );
+  }
+  
+  Future<void> _confirmAndCall() async {
+    final phone = DynamicContactService.getSupportPhone();
+    
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.phone, color: Colors.green),
+            SizedBox(width: 8),
+            Text('Arama Yap'),
+          ],
+        ),
+        content: Text('$phone numarasını aramak istiyor musunuz?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('İptal'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Ara'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      final phoneUrl = DynamicContactService.getPhoneUrl();
+      await launchUrl(Uri.parse(phoneUrl));
+    }
+  }
+  
+  Future<void> _confirmAndEmail() async {
+    final email = DynamicContactService.getSupportEmail();
+    
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.email, color: Colors.blue),
+            SizedBox(width: 8),
+            Text('E-posta Gönder'),
+          ],
+        ),
+        content: Text('$email adresine e-posta göndermek istiyor musunuz?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('İptal'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.blue,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Gönder'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      final emailUrl = DynamicContactService.getEmailUrl(
+        subject: 'FunBreak Vale Destek',
+        body: 'Merhaba, yardıma ihtiyacım var...',
+      );
+      await launchUrl(Uri.parse(emailUrl));
+    }
+  }
+  
+  Future<void> _confirmAndWhatsApp() async {
+    final whatsapp = DynamicContactService.getWhatsAppNumber();
+    
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.message, color: Color(0xFF25D366)),
+            SizedBox(width: 8),
+            Text('WhatsApp Aç'),
+          ],
+        ),
+        content: Text('$whatsapp numarasıyla WhatsApp sohbetini açmak istiyor musunuz?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('İptal'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF25D366),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Aç'),
+          ),
+        ],
+      ),
+    );
+    
+    if (confirmed == true) {
+      final whatsappUrl = DynamicContactService.getWhatsAppUrl(
+        message: 'Merhaba, FunBreak Vale ile ilgili yardıma ihtiyacım var.',
+      );
+      await launchUrl(Uri.parse(whatsappUrl), mode: LaunchMode.externalApplication);
+    }
   }
 
   void _showRatingDialog() {
@@ -707,46 +841,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _showPrivacyDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Gizlilik Politikası'),
-        content: const SingleChildScrollView(
-          child: Text(
-            'FunBreak Vale gizlilik politikası...\n\n'
-            'Kişisel verileriniz güvende...',
+  Future<void> _openPrivacyPolicy() async {
+    const url = 'https://funbreakvale.com/gizlilik-politikasi.html';
+    
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(
+            title: const Text('Gizlilik Politikası'),
+            backgroundColor: const Color(0xFFFFD700),
+            foregroundColor: Colors.black,
+          ),
+          body: WebViewWidget(
+            controller: WebViewController()
+              ..setJavaScriptMode(JavaScriptMode.unrestricted)
+              ..loadRequest(Uri.parse(url)),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Kapat'),
-          ),
-        ],
       ),
     );
   }
 
-  void _showTermsDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text('Kullanım Koşulları'),
-        content: const SingleChildScrollView(
-          child: Text(
-            'FunBreak Vale kullanım koşulları...\n\n'
-            'Hizmet şartları...',
+  Future<void> _openTermsOfUse() async {
+    const url = 'https://funbreakvale.com/kullanim-sartlari.html';
+    
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(
+            title: const Text('Kullanım Şartları'),
+            backgroundColor: const Color(0xFFFFD700),
+            foregroundColor: Colors.black,
+          ),
+          body: WebViewWidget(
+            controller: WebViewController()
+              ..setJavaScriptMode(JavaScriptMode.unrestricted)
+              ..loadRequest(Uri.parse(url)),
           ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Kapat'),
-          ),
-        ],
       ),
     );
   }
@@ -806,37 +940,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  void _openPrivacyPolicy() async {
-    const url = 'https://funbreakvale.com/gizlilik-politikasi.html';
-    try {
-      if (await canLaunchUrl(Uri.parse(url))) {
-        await launchUrl(
-          Uri.parse(url),
-          mode: LaunchMode.externalApplication,
-        );
-      } else {
-        _showErrorDialog('Gizlilik politikası sayfası açılamadı');
-      }
-    } catch (e) {
-      _showErrorDialog('Bir hata oluştu: $e');
-    }
-  }
-
-  void _openTermsOfUse() async {
-    const url = 'https://funbreakvale.com/kullanim-sartlari.html';
-    try {
-      if (await canLaunchUrl(Uri.parse(url))) {
-        await launchUrl(
-          Uri.parse(url),
-          mode: LaunchMode.externalApplication,
-        );
-      } else {
-        _showErrorDialog('Kullanım koşulları sayfası açılamadı');
-      }
-    } catch (e) {
-      _showErrorDialog('Bir hata oluştu: $e');
-    }
-  }
+  // DUPLICATE FONKSİYONLAR KALDIRILDI - WebView versiyonları kullanılıyor (satır 806-848)
 
   void _showErrorDialog(String message) {
     showDialog(

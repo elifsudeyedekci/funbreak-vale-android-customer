@@ -19,13 +19,15 @@ class RideService {
     double? pickupLng,
     double? destinationLat,
     double? destinationLng,
+    List<Map<String, dynamic>>? waypoints, // 🔥 ARA DURAKLAR
   }) async {
     try {
       print('🚗 RideService createRideRequest parametreleri:');
       print('   👤 Customer: $customerId');
       print('   📍 Pickup: $pickupLocation ($pickupLat, $pickupLng)');
       print('   🎯 Destination: $destination ($destinationLat, $destinationLng)');
-      print('   💰 Price: $estimatedPrice');
+      print('   �️  Waypoints: ${waypoints?.length ?? 0} durak');
+      print('   �💰 Price: $estimatedPrice');
       print('🔗 API URL: $baseUrl/create_ride_request.php');
       
       final response = await http.post(
@@ -40,6 +42,7 @@ class RideService {
           'pickup_lng': pickupLng ?? 0.0,
           'destination_lat': destinationLat ?? 0.0,
           'destination_lng': destinationLng ?? 0.0,
+          'waypoints': waypoints ?? [], // 🔥 ARA DURAKLAR
           'scheduled_time': scheduledDateTime, // home_screen.dart zaten server time kullanıyor!
           'estimated_price': estimatedPrice ?? 0.0,
           'payment_method': 'card',

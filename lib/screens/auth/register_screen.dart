@@ -85,6 +85,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 // Full Name Field
                 TextFormField(
                   controller: _fullNameController,
+                  keyboardType: TextInputType.text,
+                  textCapitalization: TextCapitalization.words,
+                  enableSuggestions: true,
+                  autocorrect: true,
                   decoration: const InputDecoration(
                     labelText: 'Ad Soyad',
                     border: OutlineInputBorder(),
@@ -102,7 +106,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                 // Email Field
                 TextFormField(
                   controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
+                  keyboardType: TextInputType.text,
+                  enableSuggestions: false,
+                  autocorrect: false,
                   decoration: const InputDecoration(
                     labelText: 'E-posta',
                     border: OutlineInputBorder(),

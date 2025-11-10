@@ -1,4 +1,6 @@
+import 'dart:io';  // ⚠️ PLATFORM CHECK İÇİN!
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -22,6 +24,9 @@ import 'screens/main_screen.dart';
 import 'screens/splash_screen.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/register_screen.dart';
+import 'screens/auth/sms_login_screen.dart';  // YENİ SMS GİRİŞ
+import 'screens/auth/sms_register_screen.dart';  // YENİ SMS KAYIT
+import 'screens/auth/sms_verification_screen.dart';  // SMS DOĞRULAMA
 import 'services/dynamic_contact_service.dart';
 import 'services/session_service.dart';
 
@@ -31,15 +36,56 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 // BACKGROUND MESSAGE HANDLER - UYGULAMA KAPALI
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  // Firebase'i başlat
-  await Firebase.initializeApp();
+  // Firebase'i başlat (iOS'te AppDelegate'te zaten yapıldı)
+  if (Platform.isAndroid) {
+    await Firebase.initializeApp();
+  }
   
   print('📱 === MÜŞTERİ BACKGROUND BİLDİRİM ===');
   print('   📋 Title: ${message.notification?.title}');
   print('   💬 Body: ${message.notification?.body}');
   print('   📊 Data: ${message.data}');
   print('   🏷️ Type: ${message.data['type'] ?? 'bilinmeyen'}');
-  print('🔔 UYGULAMA KAPALI - System notification düştü!');
+  
+  // ⚠️ iOS APNs otomatik gösterir, Android manuel!
+  if (Platform.isIOS) {
+    print('📱 iOS background notification - APNs tarafından otomatik gösterildi');
+    // iOS'te ek işlem gerekmez, APNs notification'ı gösterir
+    // Ride started durumunda state güncelleme yapılabilir
+    if (message.data['type'] == 'ride_started') {
+      print('🚗 === MÜŞTERİ iOS BACKGROUND: YOLCULUK BAŞLATILDI ===');
+    }
+    return;
+  }
+  
+  // 🔥 ANDROID İÇİN DATA-ONLY notification oluştur!
+  RemoteMessage finalMessage = message;
+  if (message.notification == null && message.data.isNotEmpty) {
+    print('   🔥 DATA-ONLY mesaj - notification oluşturuluyor...');
+    final title = message.data['title'] ?? 'FunBreak Vale';
+    final body = message.data['body'] ?? 'Yeni bildirim';
+    
+    finalMessage = RemoteMessage(
+      senderId: message.senderId,
+      category: message.category,
+      collapseKey: message.collapseKey,
+      contentAvailable: message.contentAvailable,
+      data: message.data,
+      from: message.from,
+      messageId: message.messageId,
+      messageType: message.messageType,
+      mutableContent: message.mutableContent,
+      notification: RemoteNotification(title: title, body: body),
+      sentTime: message.sentTime,
+      threadId: message.threadId,
+      ttl: message.ttl,
+    );
+    print('   ✅ Notification eklendi: $title');
+  }
+  
+  // 🔥 ANDROID BİLDİRİMİ GÖSTER!
+  print('🔔 [MÜŞTERİ BACKGROUND] showBackgroundNotification çağrıldı');
+  await AdvancedNotificationService.showBackgroundNotification(finalMessage);
   
   // RIDE STARTED - YOLCULUK BAŞLATILDI!
   if (message.data['type'] == 'ride_started') {
@@ -55,25 +101,36 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
+  // ⚠️ iOS'te Firebase.configure() AppDelegate'te yapılıyor!
+  if (Platform.isAndroid) {
+    try {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      print('✅ Firebase başlatıldı (Android)');
+    } catch (e) {
+      print('⚠️ Firebase init hatası: $e');
+    }
+  } else {
+    print('📱 iOS: Firebase.configure() AppDelegate tarafından yapıldı');
+  }
+  
+  // BACKGROUND MESSAGE HANDLER KAYDET - Firebase başlatıldıktan sonra!
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    
-    // BACKGROUND MESSAGE HANDLER KAYDET - MODERN YAKLAŞIM!
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-    
-    // GELİŞMİŞ BİLDİRİM SERVİSİ BAŞLAT - TIMEOUT İLE HIZLI!
-    await AdvancedNotificationService.initialize().timeout(
-      const Duration(seconds: 3),
-      onTimeout: () {
-        print('⚡ Bildirim servisi timeout - arka planda devam ediyor');
-      },
-    );
-    
-    print('Firebase + Gelişmiş bildirim sistemi başlatıldı');
+    print('✅ Background handler kayıtlı');
   } catch (e) {
-    print('Firebase init hatası: $e');
+    print('❌ Background handler hatası: $e');
+  }
+  
+  // GELİŞMİŞ BİLDİRİM SERVİSİ BAŞLAT - MUTLAKA TAMAMLANSIN!
+  print('🔥 [MÜŞTERİ] AdvancedNotificationService başlatılıyor...');
+  try {
+    await AdvancedNotificationService.initialize();
+    print('✅ [MÜŞTERİ] Gelişmiş bildirim sistemi başlatıldı');
+  } catch (e, stack) {
+    print('❌ [MÜŞTERİ] AdvancedNotificationService HATASI: $e');
+    print('📋 Stack: $stack');
   }
 
   // Session servisini başlat - TIMEOUT İLE HIZLI!
@@ -101,108 +158,28 @@ void main() async {
 }
 
 Future<void> _initializeFirebaseMessaging() async {
+  // ✅ SADECE FCM TOKEN KAYDET - BİLDİRİMLER AdvancedNotificationService TARAFINDAN YÖNETİLİYOR!
   FirebaseMessaging messaging = FirebaseMessaging.instance;
   
-  // Topic'lere subscribe ol
-  await messaging.subscribeToTopic('funbreak_customers');
-  await messaging.subscribeToTopic('funbreak_all');
-  print('Firebase topic\'lere subscribe olundu');
-  
-  // Foreground mesajları dinle
-  FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-    print('📱 === MÜŞTERİ FOREGROUND BİLDİRİM ALINDI ===');
-    print('   📋 Title: ${message.notification?.title}');
-    print('   💬 Body: ${message.notification?.body}');
-    print('   📊 Data: ${message.data}');
-    print('   🏷️ Type: ${message.data['type'] ?? 'bilinmeyen'}');
-
-    // DRIVER ASSIGNED GOTO RIDE - MANUEL ATAMA SONRASI OTOMATİK YOLCULUK EKRANI!
-    if (message.data['type'] == 'driver_assigned_goto_ride') {
-      print('🚗 === DRIVER ASSIGNED - OTOMATİK YOLCULUK EKRANI AÇILIYOR ===');
-      final rideId = message.data['ride_id'];
-      print('🆔 Ride ID: $rideId');
-
-      // Otomatik olarak aktif yolculuk ekranına git
-      if (navigatorKey.currentContext != null) {
-        Navigator.pushNamed(
-          navigatorKey.currentContext!,
-          '/modern_active_ride',
-          arguments: {
-            'rideDetails': {
-              'ride_id': rideId,
-              'customer_name': message.data['customer_name'] ?? 'Müşteri',
-              'pickup_address': message.data['pickup_address'] ?? 'Alış konumu',
-              'destination_address': message.data['destination_address'] ?? 'Varış konumu',
-              'estimated_price': message.data['estimated_price'] ?? '0',
-              'driver_name': message.data['driver_name'] ?? 'Vale Görevlisi',
-              'vehicle_plate': message.data['vehicle_plate'] ?? 'Vale Aracı',
-              'status': 'accepted',
-            },
-            'isFromBackend': true,
-          },
-        );
-        print('✅ Otomatik yolculuk ekranı açıldı - Manuel atama!');
-      }
-    }
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final userId = prefs.getString('user_id') ?? prefs.getString('admin_user_id');
     
-    // RIDE STARTED - YOLCULUK BAŞLATILDI BİLDİRİMİ!
-    if (message.data['type'] == 'ride_started') {
-      print('🚗 === MÜŞTERİ: YOLCULUK BAŞLATILDI BİLDİRİMİ ALINDI ===');
-      print('   🆔 Ride ID: ${message.data['ride_id']}');
-      print('   💬 Message: ${message.data['message']}');
-      print('📲 MÜŞTERİ: Aktif yolculuk ekranı status\'ü otomatik güncellenecek!');
+    if (userId != null && userId.isNotEmpty) {
+      final fcmToken = await messaging.getToken();
       
-      // Status güncelleme bildirimi ekrana düşürülebilir (SnackBar veya notification)
-      // Aktif yolculuk ekranındaki polling bu değişikliği 3 saniyede yakalayacak
+      if (fcmToken != null && fcmToken.isNotEmpty) {
+        print('📱 [MÜŞTERİ] FCM Token alındı: ${fcmToken.substring(0, 20)}...');
+        await _saveCustomerFCMToken(fcmToken);
+      }
+    } else {
+      print('⚠️ [MÜŞTERİ] User ID yok - FCM token kaydedilmedi (login sonrası yapılacak)');
     }
-  });
-  
-  // Background mesajları dinle
-  FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-    print('📱 Background mesaj açıldı: ${message.notification?.title}');
-    print('📊 Data: ${message.data}');
-
-    // DRIVER ASSIGNED GOTO RIDE - UYGULAMA KAPALIYKEN TIKLANDIĞINDA OTOMATİK YOLCULUK EKRANI!
-    if (message.data['type'] == 'driver_assigned_goto_ride') {
-      print('🚗 === BACKGROUND DRIVER ASSIGNED - OTOMATİK YOLCULUK EKRANI AÇILIYOR ===');
-      final rideId = message.data['ride_id'];
-      print('🆔 Ride ID: $rideId');
-
-      // Uygulama açıldığında otomatik olarak aktif yolculuk ekranına git
-      // Bu kod ana uygulamada çalışacak
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (navigatorKey.currentContext != null) {
-          Navigator.pushNamed(
-            navigatorKey.currentContext!,
-            '/modern_active_ride',
-            arguments: {
-              'rideDetails': {
-                'ride_id': rideId,
-                'customer_name': message.data['customer_name'] ?? 'Müşteri',
-                'pickup_address': message.data['pickup_address'] ?? 'Alış konumu',
-                'destination_address': message.data['destination_address'] ?? 'Varış konumu',
-                'estimated_price': message.data['estimated_price'] ?? '0',
-                'driver_name': message.data['driver_name'] ?? 'Vale Görevlisi',
-                'vehicle_plate': message.data['vehicle_plate'] ?? 'Vale Aracı',
-                'status': 'accepted',
-              },
-              'isFromBackend': true,
-            },
-          );
-          print('✅ Background otomatik yolculuk ekranı açıldı!');
-        }
-      });
-    }
-  });
-  
-  // FCM token al ve kaydet
-  String? token = await messaging.getToken();
-  print('Müşteri FCM Token: $token');
-
-  // FCM TOKEN'I HEMEN DATABASE'E KAYDET!
-  if (token != null && token.isNotEmpty) {
-    await _saveCustomerFCMToken(token);
+  } catch (e) {
+    print('⚠️ [MÜŞTERİ] FCM token kaydetme hatası: $e');
   }
+  
+  print('✅ FCM token setup tamamlandı - Bildirimler AdvancedNotificationService tarafından yönetiliyor');
 }
 
 // MÜŞTERİ FCM TOKEN KAYDETME - ŞOFÖR GİBİ ÇALIŞIYOR!
@@ -230,8 +207,8 @@ Future<void> _saveCustomerFCMToken(String fcmToken) async {
     }
     
     print('🔍 MÜŞTERİ FCM: Session keys: ${prefs.getKeys()}');
-    print('🔍 MÜŞTERİ FCM: admin_user_id: ${prefs.getString('admin_user_id')}');
-    print('🔍 MÜŞTERİ FCM: customer_id: ${prefs.getString('customer_id')}');
+    print('🔍 MÜŞTERİ FCM: admin_user_id: ${prefs.get('admin_user_id')}');
+    print('🔍 MÜŞTERİ FCM: customer_id: ${prefs.get('customer_id')}');
     print('🔍 MÜŞTERİ FCM: Final userId: $customerId');
 
     if (customerId == null || customerId <= 0) {
@@ -276,18 +253,44 @@ Future<void> _saveCustomerFCMToken(String fcmToken) async {
   }
 }
 
-// Basit ve hızlı izin sistemi
+// ⚠️ PLATFORM-SPECIFIC İZİN SİSTEMİ
 Future<void> requestPermissions() async {
   try {
-    // Bildirim izni
-    await Permission.notification.request();
+    if (Platform.isIOS) {
+      // iOS için özel izin sistemi
+      print('📱 iOS izinleri isteniyor...');
+      
+      // Bildirim izni (iOS için Firebase üzerinden)
+      final messaging = FirebaseMessaging.instance;
+      final settings = await messaging.requestPermission(
+        alert: true,
+        announcement: true,
+        badge: true,
+        carPlay: false,
+        criticalAlert: true,
+        provisional: false,
+        sound: true,
+      );
+      
+      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
+        print('✅ iOS bildirim izni verildi');
+      } else {
+        print('⚠️ iOS bildirim izni reddedildi');
+      }
+      
+      // Konum izni
+      await Permission.locationWhenInUse.request();
+      await Permission.locationAlways.request();
+      
+    } else {
+      // Android için mevcut sistem
+      await Permission.notification.request();
+      await Permission.location.request();
+    }
     
-    // Konum izni
-    await Permission.location.request();
-    
-    print('Izinler istendi');
+    print('✅ İzinler istendi (${Platform.operatingSystem})');
   } catch (e) {
-    print('Izin hatası: $e');
+    print('❌ İzin hatası: $e');
   }
 }
 
@@ -316,6 +319,19 @@ class MyApp extends StatelessWidget {
             navigatorKey: navigatorKey, // GLOBAL FEEDBACK İÇİN!
             title: 'FunBreak Vale',
             debugShowCheckedModeBanner: false,
+            
+            // 🇹🇷 TÜRKÇE KLAVYE VE KARAKTER DESTEĞİ
+            locale: languageProvider.currentLocale ?? const Locale('tr', 'TR'),
+            supportedLocales: const [
+              Locale('tr', 'TR'),
+              Locale('en', 'US'),
+            ],
+            localizationsDelegates: const [
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            
             theme: ThemeData(
               useMaterial3: true,
               primarySwatch: Colors.amber,
@@ -425,11 +441,12 @@ class MyApp extends StatelessWidget {
               ),
             ),
             themeMode: themeProvider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-            locale: languageProvider.currentLocale,
             home: const SplashScreen(), // NORMAL SPLASH - PERSİSTENCE KONTROL EKLE!
             routes: {
-              '/login': (context) => const LoginScreen(),
-              '/register': (context) => const RegisterScreen(),
+              '/login': (context) => const SmsLoginScreen(),  // YENİ SMS GİRİŞ
+              '/login_old': (context) => const LoginScreen(),  // ESKİ GİRİŞ (Yedek)
+              '/register': (context) => const SmsRegisterScreen(),  // YENİ SMS KAYIT
+              '/register_old': (context) => const RegisterScreen(),  // ESKİ KAYIT (Yedek)
               '/home': (context) => const MainScreen(),
             },
           );

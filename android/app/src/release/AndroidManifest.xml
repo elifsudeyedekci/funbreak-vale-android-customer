@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Release build için Google Maps API Key -->
+    <application>
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="AIzaSyAmPUh6vlin_kvFvssOyKHz5BBjp5WQMaY" />
+    </application>
+</manifest>

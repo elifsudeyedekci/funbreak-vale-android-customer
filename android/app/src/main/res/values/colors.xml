@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App Colors -->
+    <color name="ic_launcher_background">#FFD700</color>
+    
+    <!-- Firebase Notification Colors - MODERN NOTIFICATION! -->
+    <color name="notification_color">#FFD700</color>
+</resources>

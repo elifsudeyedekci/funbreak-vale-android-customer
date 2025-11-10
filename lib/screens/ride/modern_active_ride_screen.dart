@@ -58,12 +58,8 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
   // ✅ SAATLİK PAKET CACHE
   List<Map<String, double>> _cachedHourlyPackages = [];
   
-  // 🚗 KM TRACKING SYSTEM (SADECE NORMAL YOLCULUK İÇİN!)
-  double _totalDistanceKm = 0.0; // Toplam gidilen KM
-  LatLng? _lastDriverLocation; // Önceki sürücü konumu
-  bool _isDistanceTrackingActive = false; // KM hesaplama aktif mi
-  double _kmPrice = 20.0; // Panel'den çekilen KM fiyatı (varsayılan 20 TL/km)
-  String _lastRideStatus = ''; // Önceki ride status (waiting kontrolü için)
+  // 🗺️ HARİTA KAMERA KONTROLÜ
+  bool _isFirstCameraUpdate = true; // İlk açılışta kamera ayarla, sonra SADECE marker güncelle
   
   @override
   void initState() {
@@ -71,9 +67,6 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
     _initializeAnimations();
     _saveToPersistence();
     _loadHourlyPackages(); // Panel'den saatlik paketleri çek!
-    
-    // 🚗 KM FİYATINI PANEL'DEN ÇEK
-    _loadKmPriceFromPanel();
     
     // Başlangıçta konumları ayarla
     _customerLocation = LatLng(
@@ -91,43 +84,7 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
     WidgetsBinding.instance.addPostFrameCallback((_) {
     _initializeRideTracking();
     _initializePackageMonitoring();
-    _initializeDistanceTracking(); // 🚗 KM TRACKING BAŞLAT!
     });
-  }
-  
-  // 🚗 KM FİYATINI PANEL'DEN ÇEK
-  Future<void> _loadKmPriceFromPanel() async {
-    try {
-      final response = await http.get(
-        Uri.parse('https://admin.funbreakvale.com/api/get_pricing.php'),
-      ).timeout(const Duration(seconds: 5));
-      
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['success'] == true && data['pricing'] != null) {
-          // Panel'den gelen KM fiyatını al (km_price veya distance_price)
-          setState(() {
-            _kmPrice = (data['pricing']['km_price'] ?? data['pricing']['distance_price'] ?? 20.0).toDouble();
-          });
-          print('✅ KM fiyatı panel'den alındı: $_kmPrice TL/km');
-        }
-      }
-    } catch (e) {
-      print('⚠️ KM fiyatı alınamadı, varsayılan kullanılacak: 20 TL/km - $e');
-    }
-  }
-  
-  // 🚗 KM TRACKING SİSTEMİNİ BAŞLAT
-  void _initializeDistanceTracking() {
-    final rideType = widget.rideDetails['ride_type'] ?? 'standard';
-    
-    // Sadece normal yolculuklarda KM takibi!
-    if (rideType != 'hourly' && rideType != 'nightly') {
-      print('🚗 KM tracking başlatılıyor - Ride type: $rideType');
-      _isDistanceTrackingActive = true;
-    } else {
-      print('⏰ Saatlik/Gecelik paket - KM tracking YOK');
-    }
   }
   
   // YASAL SÖZLEŞME LOGLARI
@@ -1272,14 +1229,10 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(
                             builder: (context) => RidePaymentScreen(
-                              rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
-                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
-                                'km_price': _kmPrice, // 💰 Panel KM fiyatı
-                              }),
+                              rideDetails: Map<String, dynamic>.from(widget.rideDetails),
                               rideStatus: {
                                 'status': 'completed',
                                 'final_price': widget.rideDetails['estimated_price'] ?? 0,
-                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
                               },
                             ),
                           ),
@@ -1298,15 +1251,11 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(
                             builder: (context) => RidePaymentScreen(
-                              rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
-                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
-                                'km_price': _kmPrice, // 💰 Panel KM fiyatı
-                              }),
+                              rideDetails: Map<String, dynamic>.from(widget.rideDetails),
                               rideStatus: {
                                 'status': 'cancelled',
                                 'final_price': cancellationFee,
                                 'is_cancellation_fee': true,
-                                'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
                               },
                             ),
                           ),
@@ -1370,36 +1319,10 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
 
               // ŞOFÖR KONUM BİLGİLERİNİ AL! ✅
               if (activeRide['driver_lat'] != null && activeRide['driver_lng'] != null) {
-                final newDriverLocation = LatLng(
+                _driverLocation = LatLng(
                   (activeRide['driver_lat'] as num).toDouble(),
                   (activeRide['driver_lng'] as num).toDouble(),
                 );
-                
-                // 🚗 KM HESAPLAMA (SADECE NORMAL YOLCULUK + TRACKING AKTİF!)
-                if (_isDistanceTrackingActive && _lastDriverLocation != null) {
-                  // Önceki ve yeni konum arasındaki mesafeyi hesapla
-                  final distanceMeters = Geolocator.distanceBetween(
-                    _lastDriverLocation!.latitude,
-                    _lastDriverLocation!.longitude,
-                    newDriverLocation.latitude,
-                    newDriverLocation.longitude,
-                  );
-                  
-                  final distanceKm = distanceMeters / 1000; // metre → km
-                  
-                  // Ride status kontrolü: "waiting" değilse KM'ye ekle
-                  if (newStatus != 'waiting') {
-                    _totalDistanceKm += distanceKm;
-                    print('🚗 KM güncellendi: +${distanceKm.toStringAsFixed(2)} km → Toplam: ${_totalDistanceKm.toStringAsFixed(2)} km');
-                    print('💰 Anlık fiyat: ${(_totalDistanceKm * _kmPrice).toStringAsFixed(2)} TL (${_kmPrice} TL/km)');
-                  } else {
-                    print('⏸️ Bekleme durumunda - KM hesaplama durdu');
-                  }
-                }
-                
-                // Sürücü konumunu güncelle
-                _driverLocation = newDriverLocation;
-                _lastDriverLocation = newDriverLocation;
                 
                 print('📍 [MÜŞTERİ] Şoför konumu güncellendi: ${_driverLocation!.latitude}, ${_driverLocation!.longitude}');
                 
@@ -1444,13 +1367,8 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
                     builder: (context) => RidePaymentScreen(
-                      rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
-                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
-                        'km_price': _kmPrice, // 💰 Panel KM fiyatı
-                      }),
-                      rideStatus: Map<String, dynamic>.from(_currentRideStatus)..addAll({
-                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
-                      }),
+                      rideDetails: Map<String, dynamic>.from(widget.rideDetails),
+                      rideStatus: Map<String, dynamic>.from(_currentRideStatus),
                     ),
                   ),
                 );
@@ -1530,37 +1448,49 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
       _markers = newMarkers;
     });
     
-    // Harita kamerasını her iki konumu gösterecek şekilde ayarla
-    if (_customerLocation != null && _driverLocation != null && _mapController != null) {
+    // 🗺️ Harita kamerasını SADECE İLK AÇILIŞTA ayarla, sonra kullanıcı kontrolünde!
+    if (_isFirstCameraUpdate && _customerLocation != null && _driverLocation != null && _mapController != null) {
       _fitMarkersOnMap();
+      _isFirstCameraUpdate = false; // Artık kamera hareket etmeyecek!
+      print('📷 İlk kamera pozisyonu ayarlandı - artık sadece marker güncellenecek');
     }
   }
   
-  // HARİTA KAMERASINI İKİ KONUMU DA GÖSTERECEK ŞEKİLDE AYARLA
+  // HARİTA KAMERASINI İKİ KONUMU DA GÖSTERECEK ŞEKİLDE AYARLA (SADECE İLK AÇILIŞTA!)
   void _fitMarkersOnMap() {
     if (_customerLocation == null || _driverLocation == null || _mapController == null) return;
     
-    double minLat = _customerLocation!.latitude < _driverLocation!.latitude 
-      ? _customerLocation!.latitude : _driverLocation!.latitude;
-    double maxLat = _customerLocation!.latitude > _driverLocation!.latitude 
-      ? _customerLocation!.latitude : _driverLocation!.latitude;
-    double minLng = _customerLocation!.longitude < _driverLocation!.longitude 
-      ? _customerLocation!.longitude : _driverLocation!.longitude;
-    double maxLng = _customerLocation!.longitude > _driverLocation!.longitude 
-      ? _customerLocation!.longitude : _driverLocation!.longitude;
+    // Müşteri-sürücü arası mesafe hesapla
+    final distance = _calculateDriverDistance();
     
-    // Padding ekle
-    double padding = 0.01; // ~1km
+    // Mesafeye göre zoom level belirle (daha iyi görünüm)
+    double zoomLevel;
+    if (distance < 1) {
+      zoomLevel = 15.0; // Çok yakın (0-1 km)
+    } else if (distance < 5) {
+      zoomLevel = 13.0; // Yakın (1-5 km)
+    } else if (distance < 10) {
+      zoomLevel = 12.0; // Orta (5-10 km)
+    } else {
+      zoomLevel = 11.0; // Uzak (10+ km)
+    }
+    
+    // İki nokta arasındaki orta noktaya zoom yap
+    double centerLat = (_customerLocation!.latitude + _driverLocation!.latitude) / 2;
+    double centerLng = (_customerLocation!.longitude + _driverLocation!.longitude) / 2;
     
     _mapController!.animateCamera(
-      CameraUpdate.newLatLngBounds(
-        LatLngBounds(
-          southwest: LatLng(minLat - padding, minLng - padding),
-          northeast: LatLng(maxLat + padding, maxLng + padding),
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: LatLng(centerLat, centerLng),
+          zoom: zoomLevel,
+          tilt: 0,
+          bearing: 0,
         ),
-        100.0, // Padding
       ),
     );
+    
+    print('📷 Harita kamerası ayarlandı: zoom=$zoomLevel, distance=${distance.toStringAsFixed(1)}km');
   }
   
   // ŞOFÖR MESAFESİ HESAPLA
@@ -2450,14 +2380,11 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                       rideDetails: Map<String, dynamic>.from(widget.rideDetails)..addAll({
                         'status': 'cancelled',
                         'cancellation_fee': cancellationFee,
-                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam gidilen KM
-                        'km_price': _kmPrice, // 💰 Panel KM fiyatı
                       }),
                       rideStatus: {
                         'status': 'cancelled',
                         'final_price': cancellationFee,
                         'is_cancellation_fee': true,
-                        'total_distance_km': _totalDistanceKm, // 🚗 Toplam KM
                       },
                     ),
                   ),

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io'; // ✅ Platform kontrolü için
 import 'dart:ui';
 import 'dart:async';
 import 'dart:typed_data'; // 🔥 Int64List için!
@@ -206,19 +207,50 @@ class AdvancedNotificationService {
     print('✅ [MÜŞTERİ] ${channels.length} bildirim kanalı OLUŞTURULDU (IMPORTANCE MAX!)');
   }
   
-  // İZİN İSTEME
+  // İZİN İSTEME VE TOKEN ALMA
   static Future<void> _requestPermissions() async {
-    final settings = await _messaging!.requestPermission(
-      alert: true,
-      announcement: false,
-      badge: true,
-      carPlay: false,
-      criticalAlert: false,
-      provisional: false,
-      sound: true,
-    );
-    
-    print('🔔 Bildirim izni durumu: ${settings.authorizationStatus}');
+    try {
+      final settings = await _messaging!.requestPermission(
+        alert: true,
+        announcement: false,
+        badge: true,
+        carPlay: false,
+        criticalAlert: false,
+        provisional: false,
+        sound: true,
+      );
+      
+      print('🔔 Bildirim izni durumu: ${settings.authorizationStatus}');
+      
+      // ✅ iOS için ekstra token alma (Android'de main.dart'ta zaten var)
+      if (Platform.isIOS) {
+        if (settings.authorizationStatus != AuthorizationStatus.authorized &&
+            settings.authorizationStatus != AuthorizationStatus.provisional) {
+          print('❌ iOS bildirim izni verilmedi: ${settings.authorizationStatus}');
+          return;
+        }
+        
+        // Token al (10 saniye timeout)
+        try {
+          final token = await _messaging!.getToken().timeout(
+            Duration(seconds: 10),
+            onTimeout: () {
+              print('⏱️ iOS FCM token timeout!');
+              return null;
+            },
+          );
+          
+          if (token != null) {
+            print('✅ iOS FCM Token alındı: ${token.substring(0, 30)}...');
+            await _updateTokenOnServer(token);
+          }
+        } catch (e) {
+          print('❌ iOS FCM token hatası: $e');
+        }
+      }
+    } catch (e) {
+      print('❌ İzin isteme hatası: $e');
+    }
   }
   
   // TOPIC SUBSCRIBE

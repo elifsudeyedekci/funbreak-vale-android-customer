@@ -61,12 +61,18 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
     
     // ÖNCELİKLE ride status'tan verileri al
     _waitingMinutes = widget.rideStatus['waiting_minutes'] ?? 0;
-    _distance = (widget.rideStatus['current_km'] as num?)?.toDouble() ?? 0.0;
+    // ✅ MESAFE - Backend'den total_distance, current_km veya total_distance_km gelebilir
+    _distance = double.tryParse(
+      widget.rideStatus['total_distance']?.toString() ??
+      widget.rideStatus['current_km']?.toString() ??
+      widget.rideStatus['total_distance_km']?.toString() ??
+      widget.rideDetails['total_distance']?.toString() ?? '0'
+    ) ?? 0.0;
     
     // BASE PRICE (bekleme hariç!) - Backend'den base_price_only gelecek
     final basePriceOnly = widget.rideDetails['base_price_only'] ?? widget.rideDetails['estimated_price'];
     if (basePriceOnly != null) {
-      _basePrice = (basePriceOnly as num).toDouble();
+      _basePrice = double.tryParse(basePriceOnly.toString()) ?? 0.0; // ✅ SAFE PARSE
     }
     
     _initializeAnimation();
@@ -162,11 +168,16 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
       return; // Hesaplama bitir!
     }
     
-    // ✅ MESAFE HESAPLAMA - modern_active_ride_screen'den gelen total_distance_km kullan!
-    _distance = double.tryParse(widget.rideStatus['total_distance_km']?.toString() ?? 
-                                  widget.rideDetails['total_distance_km']?.toString() ?? '0') ?? 0.0;
+    // ✅ MESAFE HESAPLAMA - Backend'den total_distance gelir
+    _distance = double.tryParse(
+      widget.rideStatus['total_distance']?.toString() ??
+      widget.rideStatus['current_km']?.toString() ??
+      widget.rideStatus['total_distance_km']?.toString() ??
+      widget.rideDetails['total_distance']?.toString() ??
+      widget.rideDetails['current_km']?.toString() ?? '0'
+    ) ?? 0.0;
     
-    print('📏 Toplam mesafe: ${_distance.toStringAsFixed(2)} km');
+    print('📏 MÜŞTERİ ÖDEME: Toplam mesafe = ${_distance.toStringAsFixed(2)} km');
     
     // ✅ NORMAL YOLCULUK VS SAATLİK PAKET
     final estimatedPrice = double.tryParse(widget.rideDetails['estimated_price']?.toString() ?? '0') ?? 0.0;
@@ -210,28 +221,26 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
       _totalPrice = estimatedPrice;
       print('📦 MÜŞTERİ ÖDEME: SAATLİK PAKET - Sabit fiyat: ₺${_totalPrice.toStringAsFixed(2)}');
     } else {
-      // NORMAL YOLCULUK - KM × Panel KM Fiyatı + Bekleme Ücreti
-      final kmPrice = double.tryParse(widget.rideDetails['km_price']?.toString() ?? '20') ?? 20.0;
+      // ✅ NORMAL YOLCULUK - Backend'den gelen estimated_price kullan (zaten bekleme dahil!)
+      // ⚠️ Backend'den gelen estimated_price ZATEN bekleme dahil!
+      final finalPrice = widget.rideStatus['final_price'];
+      final backendEstimatedPrice = widget.rideStatus['estimated_price'] ?? 
+                                     widget.rideDetails['estimated_price'] ?? 
+                                     estimatedPrice;
       
-      // Base price = KM × KM Fiyatı
-      _basePrice = _distance * kmPrice;
-      
-      // Bekleme ücreti hesapla
-      _waitingFee = 0.0;
-      if (_waitingMinutes > _waitingFreeMinutes) {
-        final chargeableMinutes = _waitingMinutes - _waitingFreeMinutes;
-        final intervals = (chargeableMinutes / _waitingIntervalMinutes).ceil();
-        _waitingFee = intervals * _waitingFeePerInterval;
-        print('💳 Bekleme: $_waitingMinutes dk (ücretsiz: $_waitingFreeMinutes dk) → $intervals aralık × ₺$_waitingFeePerInterval = ₺${_waitingFee.toStringAsFixed(2)}');
+      // final_price varsa onu kullan (tamamlanmış yolculuk)
+      if (finalPrice != null && finalPrice > 0) {
+        _totalPrice = double.tryParse(finalPrice.toString()) ?? 0.0;
+        _basePrice = _totalPrice; // Tam tutar
+        _waitingFee = 0.0; // Backend'de zaten hesaplanmış
+        print('💳 ÖDEME: final_price kullanılıyor (completed): ₺${_totalPrice.toStringAsFixed(2)}');
+      } else {
+        // Backend'den gelen estimated_price kullan
+        _totalPrice = double.tryParse(backendEstimatedPrice.toString()) ?? 0.0;
+        _basePrice = _totalPrice; // Backend zaten toplam hesaplamış
+        _waitingFee = 0.0; // Backend'de zaten dahil
+        print('💳 ÖDEME: Backend estimated_price (bekleme dahil): ₺${_totalPrice.toStringAsFixed(2)}');
       }
-      
-      // Toplam = Base + Bekleme
-      _totalPrice = _basePrice + _waitingFee;
-      
-      print('💳 NORMAL YOLCULUK ÖDEME:');
-      print('   🚗 Mesafe: ${_distance.toStringAsFixed(2)} km × ₺$kmPrice = ₺${_basePrice.toStringAsFixed(2)}');
-      print('   ⏳ Bekleme: ₺${_waitingFee.toStringAsFixed(2)}');
-      print('   💰 TOPLAM: ₺${_totalPrice.toStringAsFixed(2)}');
     }
     
     // setState ile UI güncelle

@@ -23,6 +23,7 @@ import '../../services/dynamic_contact_service.dart';
 import '../profile/profile_screen.dart';
 import '../legal/terms_screen.dart';
 import '../ride/modern_active_ride_screen.dart'; // MODERNİ AKTİF YOLCULUK EKRANI!
+import '../reservations/reservations_screen.dart';
 import '../../services/pricing_service.dart';
 import '../../services/location_service.dart';
 import '../../services/location_search_service.dart';
@@ -2346,7 +2347,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           'pickup_lng': _pickupLocation!.longitude,
           'destination_lat': _pickupLocation!.latitude, // SAATLİK PAKET - AYNI KONUM  
           'destination_lng': _pickupLocation!.longitude, // SAATLİK PAKET - AYNI KONUM
-          'scheduled_time': (await _getCorrectScheduledTime()).toIso8601String(),
+          'scheduled_time': (await _getCorrectScheduledTime())?.toIso8601String() ?? '',
           'estimated_price': (_selectedHourlyPackage!.price) - _discountAmount,
           'payment_method': _selectedPaymentMethod,
           'request_type': 'immediate_or_soon',
@@ -4201,10 +4202,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       // MERKEZİ FONKSİYON İLE DOĞRULAMA - SERVER TIME!
       final centralTime = await _getCorrectScheduledTime();
       print('⏰ Final scheduled_time: ${scheduledDateTime?.toIso8601String() ?? 'NULL'}');
-      print('⏰ Central validation (SERVER): ${centralTime.toIso8601String()}');
+      print('⏰ Central validation (SERVER): ${centralTime?.toIso8601String() ?? 'NULL - HEMEN'}');
       print('📝 _selectedTimeOption: $_selectedTimeOption');
       
-      // Central fonksiyonu kullan - SERVER BAZLI!
+      // Central fonksiyonu kullan - SERVER BAZLI! (NULL ise "Hemen" demek)
       scheduledDateTime = centralTime;
       
       // YENİ RideService ile talep oluştur - AKILLI SİSTEM!
@@ -4214,7 +4215,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         destination: _destinationAddress,
         serviceType: _selectedServiceType,
         requestType: _selectedTimeOption == 'Hemen' ? 'immediate_or_soon' : 'scheduled_later',
-        scheduledDateTime: scheduledDateTime.toIso8601String(),
+        scheduledDateTime: scheduledDateTime?.toIso8601String() ?? '', // NULL ise boş string
         selectedDriverId: 0, // Akıllı sistem - otomatik seçim
         estimatedPrice: _estimatedPrice,
         discountCode: _appliedDiscountCode,
@@ -4332,8 +4333,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               onPressed: () {
                 Navigator.of(context).pop();
                 // Rezervasyonlarım sayfasına yönlendir
-                Future.delayed(Duration(milliseconds: 100), () {
-                  Navigator.pushNamed(context, '/reservations');
+                Future.delayed(const Duration(milliseconds: 100), () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const ReservationsScreen(),
+                    ),
+                  );
                 });
               },
               child: Text('Rezervasyonlarım', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
@@ -5757,8 +5763,13 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
   void _openPaymentScreen() {
     print('💳 Ödeme sayfasına yönlendiriliyor...');
     
-    // Burada rezervasyonlar sayfasına veya özel ödeme sayfasına yönlendirebilirsiniz
-    Navigator.pushNamed(context, '/reservations');
+    // Borç ödemeleri için geçmiş sekmesine yönlendir
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const ReservationsScreen(initialTabIndex: 1),
+      ),
+    );
   }
 
   // EKSİK METODLAR - BUILD HATA DÜZELTMESİ!
@@ -6791,18 +6802,35 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
       
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+        print('📊 BORÇ KONTROL RESPONSE: ${data['has_debt']}, total_debt: ${data['total_debt']}');
+        
         if (data['success'] == true && data['has_debt'] == true) {
-          final totalDebt = data['total_debt'] ?? 0.0;
+          final totalDebt = (data['total_debt'] as num?)?.toDouble() ?? 0.0; // ✅ int/double safe parse
           final pendingRides = List<Map<String, dynamic>>.from(data['pending_rides'] ?? []);
           
+          print('🚨 BORÇ VAR! Toplam: ₺$totalDebt, ${pendingRides.length} yolculuk');
           _showDebtWarning(totalDebt, pendingRides);
-          return false;
+          return false; // Talep oluşturmaya izin verme!
         }
+        
+        print('✅ BORÇ YOK - Talep oluşturabilir');
+        return true;
       }
-      return true;
+      
+      print('⚠️ Borç kontrol API başarısız: ${response.statusCode}');
+      return true; // API çalışmazsa geçici olarak izin ver
     } catch (e) {
       print('❌ Borç kontrol hatası: $e');
-      return true;
+      
+      // ⚠️ Güvenlik için: Hata durumunda uyarı göster AMA engelleme!
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ Borç kontrol sistemi geçici olarak çalışmıyor. Lütfen daha sonra tekrar deneyin.'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return false; // GÜVENLİK: Hata durumunda engelle!
     }
   }
   
@@ -6850,10 +6878,15 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
           ElevatedButton(
             onPressed: () {
               Navigator.pop(ctx);
-              Navigator.pushNamed(context, '/reservations');
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const ReservationsScreen(initialTabIndex: 1),
+                ),
+              );
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFD700)),
-            child: const Text('Ödemelerimi Gör'),
+            child: const Text('Borca Git'),
           ),
         ],
       ),
@@ -6933,20 +6966,22 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
 
   // MERKEZI SCHEDULED TIME HESAPLAMA - HER İKİ SERVİS İÇİN!
   // 🚀 SERVER TIME KULLAN - PHONE TIMEZONE BYPASS!
-  Future<DateTime> _getCorrectScheduledTime() async {
+  Future<DateTime?> _getCorrectScheduledTime() async {
     print('🕰️ SCHEDULED TIME HESAPLAMA (SERVER TIME):');
     print('   📝 _selectedTimeOption: $_selectedTimeOption');
     print('   📅 _selectedDateTime: $_selectedDateTime');
+    
+    // "Hemen" için NULL döndür (backend'e scheduled_time gönderme!)
+    if (_selectedTimeOption == 'Hemen' || 
+        _selectedTimeOption.contains('Tahmini')) {
+      print('   ✅ Hemen seçildi - scheduled_time NULL olacak (immediate request)');
+      return null;
+    }
     
     // SERVER SAATİNİ AL - PHONE TIMEZONE BAĞIMSIZ!
     final adminApi = AdminApiProvider();
     final serverNow = await adminApi.getServerTime();
     print('   🌐 Server saati: $serverNow');
-    
-    if (_selectedTimeOption == 'Hemen') {
-      print('   ⚡ Hemen seçildi: $serverNow');
-      return serverNow;
-    }
     
     // Özel tarih seçilmişse onu kullan - AMA SADECE GERÇEK ÖZEL TARİH İÇİN!
     if (_selectedDateTime != null && _selectedTimeOption.startsWith('Özel')) {
@@ -7189,7 +7224,12 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
             ElevatedButton(
               onPressed: () {
                 Navigator.pop(context);
-                Navigator.pushNamed(context, '/reservations');
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const ReservationsScreen(),
+                  ),
+                );
               },
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFD700)),
               child: const Text('Rezervasyon'),

@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/saved_addresses_service.dart';
 import '../../widgets/map_location_picker.dart';
@@ -1207,6 +1210,56 @@ class _AddAddressScreenState extends State<AddAddressScreen> {
           backgroundColor: Colors.red,
         ),
       );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    
+    // ✅ BACKEND'E GÜNCELLEME GÖNDER (widget.address varsa)
+    if (widget.address != null) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final customerId = prefs.getString('admin_user_id') ?? prefs.getString('customer_id') ?? '0';
+        final addressId = widget.address!.id; // ✅ SavedAddress obje!
+        
+        final response = await http.post(
+          Uri.parse('https://admin.funbreakvale.com/api/update_saved_address.php'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'address_id': int.tryParse(addressId) ?? 0,
+            'customer_id': int.parse(customerId),
+            'name': _nameController.text.trim(),
+            'address': _selectedAddress,
+            'description': _notesController.text.trim(), // ✅ _notesController!
+            'latitude': _selectedLocation!.latitude,
+            'longitude': _selectedLocation!.longitude,
+            'type': _selectedType,
+            'is_favorite': widget.address!.isFavorite ? 1 : 0, // ✅ widget.address.isFavorite!
+          }),
+        ).timeout(const Duration(seconds: 10));
+        
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data['success'] == true) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('✅ Adres güncellendi'), backgroundColor: Colors.green),
+              );
+              Navigator.pop(context, true);
+            }
+            return;
+          }
+        }
+      } catch (e) {
+        print('❌ Adres güncelleme hatası: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('❌ Hata: $e'), backgroundColor: Colors.red),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
       return;
     }
 

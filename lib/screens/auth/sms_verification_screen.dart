@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:sms_autofill/sms_autofill.dart'; // ✅ SMS OTOMATİK OKUMA!
 import 'dart:convert';
 import 'dart:async';
 import '../../providers/auth_provider.dart';
@@ -46,11 +47,24 @@ class _SmsVerificationScreenState extends State<SmsVerificationScreen> {
   void initState() {
     super.initState();
     _startTimer();
+    _listenForCode(); // ✅ SMS OTOMATİK OKUMA!
+  }
+  
+  Future<void> _listenForCode() async {
+    try {
+      // listenForCode void döndürür, onCodeCallback kullan
+      SmsAutoFill().listenForCode();
+      // Alternatif: code bekleme yok, manuel paste ile çalışır
+      // _handlePastedCode() zaten var, maxLength=6 ile çalışır
+    } catch (e) {
+      print('SMS otomatik okuma hatası: $e');
+    }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    SmsAutoFill().unregisterListener(); // ✅ SMS listener temizle
     for (var controller in _codeControllers) {
       controller.dispose();
     }
@@ -382,12 +396,16 @@ class _SmsVerificationScreenState extends State<SmsVerificationScreen> {
         focusNode: _focusNodes[index],
         textAlign: TextAlign.center,
         keyboardType: TextInputType.number,
-        maxLength: 1,
+        maxLength: 6, // ✅ 6 YAP - Paste için!
+        autofillHints: index == 0 ? const [AutofillHints.oneTimeCode] : null, // ✅ SMS
         style: const TextStyle(
           fontSize: 24,
           fontWeight: FontWeight.bold,
         ),
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          LengthLimitingTextInputFormatter(6),
+        ],
         decoration: InputDecoration(
           counterText: '',
           border: OutlineInputBorder(

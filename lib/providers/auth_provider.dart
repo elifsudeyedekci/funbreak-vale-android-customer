@@ -2,6 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'dart:math';
 import 'admin_api_provider.dart';
 
 class AuthProvider with ChangeNotifier {
@@ -19,7 +22,19 @@ class AuthProvider with ChangeNotifier {
   String? _customerId;
   String? _customerName;
   String? _customerPhone;
-  double _pendingPaymentAmount = 0.0; // BEKLEYEN ÖDEME MİKTARI
+  double _pendingPaymentAmount = 0.0;
+  String? _deviceId;
+  
+  Future<String> _getOrCreateDeviceId() async {
+    final prefs = await SharedPreferences.getInstance();
+    String? deviceId = prefs.getString('device_id');
+    if (deviceId == null || deviceId.isEmpty) {
+      deviceId = 'device_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(999999)}';
+      await prefs.setString('device_id', deviceId);
+    }
+    _deviceId = deviceId;
+    return deviceId;
+  }
 
   bool get isAuthenticated => _isAuthenticated;
   bool get isLoading => _isLoading;
@@ -217,6 +232,8 @@ class AuthProvider with ChangeNotifier {
     _error = null;
 
     try {
+      final deviceId = await _getOrCreateDeviceId();
+      
       // Test hesapları için direkt giriş
       if (email == "test@customer.com" && password == "123456") {
         final prefs = await SharedPreferences.getInstance();
@@ -270,6 +287,17 @@ class AuthProvider with ChangeNotifier {
         } catch (firebaseError) {
           debugPrint('Firebase giriş hatası: $firebaseError');
           // Admin panel girişi başarılı olduğu için devam et
+        }
+        
+        // ✅ ÇOKLU OTURUM
+        try {
+          await http.post(
+            Uri.parse('https://admin.funbreakvale.com/api/logout_other_devices.php'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'user_id': _customerId, 'device_id': deviceId, 'user_type': 'customer'}),
+          ).timeout(const Duration(seconds: 5));
+        } catch (e) {
+          debugPrint('Çoklu oturum hatası: $e');
         }
         
         _setLoading(false);

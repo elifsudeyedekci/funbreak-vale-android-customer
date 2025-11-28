@@ -2,7 +2,7 @@ name: funbreak_vale_customer
 description: "FunBreak Vale Customer App"
 publish_to: 'none'
 
-version: 1.4.0+101
+version: 1.4.3+124
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -50,4 +50,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/app_icon.png
-    - assets/sounds/ 
+    - assets/sounds/
+    - assets/images/ 

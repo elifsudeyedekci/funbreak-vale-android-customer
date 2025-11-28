@@ -840,6 +840,12 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
     final hasDiscount = discountCode.isNotEmpty && discountAmount > 0;
     final originalPrice = hasDiscount ? ridePrice + discountAmount : ridePrice;
     
+    // 🗺️ Özel konum bilgisi
+    final specialLocation = ride['special_location'];
+    final hasSpecialLocation = specialLocation != null && specialLocation['fee'] != null && (specialLocation['fee'] as num) > 0;
+    final specialLocationFee = hasSpecialLocation ? (specialLocation['fee'] as num).toDouble() : 0.0;
+    final specialLocationName = hasSpecialLocation ? (specialLocation['name']?.toString() ?? 'Özel Bölge') : '';
+    
     // 🔍 DEBUG
     if (ride['id'].toString() == '487' || ride['id'].toString() == '488') {
       print('🎁 MÜŞTERİ GEÇMİŞ #${ride['id']}: discount_code=$discountCode, discount_amount=$discountAmount, hasDiscount=$hasDiscount');
@@ -985,6 +991,24 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
                           style: const TextStyle(
                             fontSize: 11,
                             color: Colors.orange,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                      if (hasSpecialLocation) ...[
+                        Text(
+                          '🗺️ $specialLocationName',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.blue[400],
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        Text(
+                          '+₺${specialLocationFee.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.blue[400],
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -1448,6 +1472,7 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
                     '🗺️ Rota Detayları',
                     [
                       'Nereden: ${ride['pickup_address'] ?? 'Belirtilmemiş'}',
+                      ..._parseWaypoints(ride['waypoints']),
                       'Nereye: ${ride['destination_address'] ?? 'Belirtilmemiş'}',
                       'Mesafe: ${distance > 0 ? '${distance.toStringAsFixed(1)} km' : 'Bilinmiyor'}',
                     ],
@@ -1742,6 +1767,38 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
         ),
       ],
     );
+  }
+
+  // ARA DURAKLAR PARSE ET
+  List<String> _parseWaypoints(dynamic waypointsJson) {
+    try {
+      if (waypointsJson == null || waypointsJson.toString().isEmpty || waypointsJson.toString() == 'null') {
+        return [];
+      }
+      
+      List<dynamic> waypoints = [];
+      if (waypointsJson is String) {
+        waypoints = jsonDecode(waypointsJson);
+      } else if (waypointsJson is List) {
+        waypoints = waypointsJson;
+      }
+      
+      if (waypoints.isEmpty) {
+        return [];
+      }
+      
+      List<String> result = [];
+      for (int i = 0; i < waypoints.length; i++) {
+        final waypoint = waypoints[i];
+        final address = waypoint['address'] ?? waypoint['adres'] ?? waypoint['name'] ?? 'Ara Durak ${i + 1}';
+        result.add('🛣️ Ara Durak ${i + 1}: $address');
+      }
+      
+      return result;
+    } catch (e) {
+      print('⚠️ Waypoints parse hatası (geçmiş yolculuklar): $e');
+      return [];
+    }
   }
 
   String _getStatusText(String status) {

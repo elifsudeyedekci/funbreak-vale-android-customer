@@ -1,4 +1,4 @@
-package com.funbreakvale.customer
+package com.funbreak.vale.customer
 
 import io.flutter.embedding.android.FlutterActivity
 import android.os.Bundle
@@ -17,3 +17,4 @@ class MainActivity: FlutterActivity() {
         println("🔍 MainActivity onCreate - Keyboard configured for Turkish input")
     }
 }
+

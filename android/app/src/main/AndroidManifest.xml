@@ -115,5 +115,15 @@
             </intent-filter>
         </service>
         
+        <!-- 16KB Page Size Support for Android 15+ -->
+        <property
+            android:name="android.app.16kb_page_size.enabled"
+            android:value="true" />
+        
+        <!-- 16KB Backward Compatibility Mode -->
+        <property
+            android:name="android.app.pageSizeCompat"
+            android:value="true" />
+        
     </application>
 </manifest> 

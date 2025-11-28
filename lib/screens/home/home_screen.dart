@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math';
 import 'dart:async';
+import 'package:url_launcher/url_launcher.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/admin_api_provider.dart'; // ADMİN API PROVIDER IMPORT!
 import '../../providers/ride_provider.dart';
@@ -39,6 +40,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../main_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -172,22 +174,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         print('🔍 Backend aktif yolculuk response: $data');
         
         if (data['success'] == true && data['active_rides'] != null && data['active_rides'].length > 0) {
-          // SADECE GERÇEK AKTİF YOLCULUKLARI GÖSTER! (completed ve cancelled HARİÇ!)
+          // SADECE VALE KABUL ETTİYSE YOLCULUK EKRANINA GİT!
           final activeRide = data['active_rides'][0];
           final rideStatus = activeRide['status']?.toString() ?? '';
           
-          if (rideStatus == 'completed' || rideStatus == 'cancelled') {
-            print('⏸️ Yolculuk TAMAMLANMIŞ ($rideStatus) - yönlendirme YAPILMAYACAK!');
-            return;
-          }
-          
-          print('✅ Backend aktif yolculuk bulundu - otomatik yolculuk ekranı açılıyor');
+          // ❌ pending, scheduled, completed, cancelled → YOLCULUK EKRANI AÇILMAMALI!
+          // ✅ SADECE accepted veya in_progress → YOLCULUK EKRANI AÇILMALI!
+          if (rideStatus == 'accepted' || rideStatus == 'in_progress') {
+            print('✅ Vale KABUL ETTİ ($rideStatus) - yolculuk ekranı açılıyor');
           
           // Otomatik yolculuk ekranına git
           Navigator.pushNamed(context, '/modern_active_ride', arguments: {
             'rideDetails': activeRide,
             'isFromBackend': true,
           });
+          } else if (rideStatus == 'scheduled' || rideStatus == 'pending') {
+            print('📅 Bekleyen yolculuk ($rideStatus) - Yolculuk ekranı AÇILMAYACAK!');
+            // Yolculuk ekranı açılmaz - kullanıcı rezervasyonlardan görebilir
+          } else {
+            print('⏸️ Yolculuk durumu: $rideStatus - yönlendirme YAPILMAYACAK!');
+          }
         } else {
           print('ℹ️ Backend aktif yolculuk bulunamadı');
         }
@@ -675,7 +681,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                               Expanded(
                                 child: _buildServiceTypeButton(
                                   'vale',
-                                  'Vale Çağır',
+                                  'Mesafe Bazlı (KM)',
                                   Icons.directions_car,
                                 ),
                               ),
@@ -769,6 +775,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                             const SizedBox(height: 8),
                           ],
 
+                          const SizedBox(height: 16), // Ekstra boşluk - buton yukarıda çok bitişik görünmesin
+
                           // TEK ANA BUTON - VALE SEÇ 2. AŞAMAYA TAŞINDI!
                           SizedBox(
                             width: double.infinity,
@@ -793,7 +801,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                       ),
                                     )
                                   : const Text(
-                                      'Yolculuğu Onayla',
+                                      'Detay Gör Ve Onayla',
                                       style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.bold,
@@ -1956,51 +1964,72 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       // 2. TALEP ZATEN _finalizeValeCall() İÇİNDE OLUŞTURULDU - DUPLICATE KALDIRILDI!
       print('ℹ️ Ride talebi zaten oluşturuldu - duplicate engellendi');
       
-      // 3. 60 SANİYE LİK TIMER BAŞLAT (GERÇEK ARAMA) - UZATILDI!
-      _driverSearchTimer = Timer(const Duration(seconds: 60), () async {
+      // 3. 35 SANİYE TIMER BAŞLAT - Backend timer'ı manuel çağır + kontrol et!
+      _driverSearchTimer = Timer(const Duration(seconds: 35), () async {
         // Eğer arama iptal edilmediyse ve modal hala açıksa
         if (!_searchCancelled && modalContext.mounted) {
           try {
-            print('⚠️ 60 saniye doldu - Vale bulunamadı!');
+            print('⏰ 35 saniye doldu - Backend timer manuel çağrılıyor...');
             
-            // AKTİF TALEBİ İPTAL ET - MÜŞTERİ TEKRAR ÇAĞIRABLS!
-            try {
-              final adminApi = AdminApiProvider();
               final prefs = await SharedPreferences.getInstance();
               final customerId = prefs.getString('user_id') ?? '0';
               
-              print('🚫 Vale bulunamadı - talep iade ediliyor...');
-              
-              // PROVİZYON KODLARI GİZLENDİ [[memory:9694916]]
-              /*
-              if (_provisionProcessed) {
-                // Provizyon iade kodları
-              }
-              */
-              
-              // SONRA TALEBİ İPTAL ET  
-              final cancelResult = await adminApi.cancelRideRequest(
-                customerId: customerId,
-                reason: 'no_driver_found_30sec_timeout',
-              );
-              
-              if (cancelResult['success'] == true) {
-                print('✅ Aktif talep + provizyon başarıyla iptal/iade edildi');
-              } else {
-                print('⚠️ Talep iptal uyarısı: ${cancelResult['message']}');
-              }
-            } catch (cancelError) {
-              print('❌ Talep iptal hatası: $cancelError');
+            // MANUEL BACKEND TIMER ÇAĞRISI - Asenkron CURL çalışmadığı için!
+            print('🔄 Backend timer manuel tetikleniyor - customer_id: $customerId');
+            try {
+              // Customer ID ile son pending ride'ı bul ve timer çalıştır
+              final timerResponse = await http.get(
+                Uri.parse('https://admin.funbreakvale.com/api/trigger_cancel_timer_by_customer.php?customer_id=$customerId'),
+              ).timeout(const Duration(seconds: 5));
+              print('✅ Backend timer tetiklendi: ${timerResponse.body}');
+            } catch (timerError) {
+              print('⚠️ Timer tetikleme hatası: $timerError');
             }
+            
+            // 2 saniye bekle, backend işlesin
+            await Future.delayed(const Duration(seconds: 2));
+            
+            // ŞİMDİ BACKEND'İN STATUS'ÜNÜ KONTROL ET!
+            
+            // HTTP ile direkt backend çağrısı
+            final response = await http.get(
+              Uri.parse('https://admin.funbreakvale.com/api/get_customer_active_rides.php?customer_id=$customerId'),
+            ).timeout(const Duration(seconds: 10));
+            
+            if (response.statusCode == 200) {
+              final activeRides = jsonDecode(response.body);
+              
+              if (activeRides['success'] == true && activeRides['rides'] != null) {
+                final rides = activeRides['rides'] as List;
+              
+              if (rides.isNotEmpty) {
+                final ride = rides[0];
+                final status = ride['status'];
+                
+                print('📊 Backend status: $status');
+                
+                if (status == 'scheduled') {
+                  // ✅ BACKEND BAŞARIYLA 'scheduled' YAPMIŞ!
+                  print('✅ Rezervasyon oluşturuldu - Status: scheduled');
             
             // Modal'ı kapat
             Navigator.of(modalContext).pop();
             
-            // Ana context'te "vale bulunamadı" mesajı göster
+                  // Rezervasyon oluşturuldu mesajı göster
             if (mounted) {
               await Future.delayed(const Duration(milliseconds: 500));
-              _showDriverNotFoundDialog();
+                    _showReservationCreatedDialog(ride);
             }
+                  return;
+                }
+              }
+              }
+            }
+            
+            // Vale kabul edilmemiş, hala pending - Rezervasyon oluşturulmamış
+            print('⚠️ Backend scheduled yapmamış - Modal açık kalacak');
+            // Modal açık kalsın, müşteri beklesin
+            
           } catch (e) {
             print('❌ Vale arama timeout hatası: $e');
           }
@@ -2044,6 +2073,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           final data = jsonDecode(response.body);
           print('🔍 Ride durumu API response: $data');
           print('🔍 Success: ${data['success']}, Status: ${data['status']}');
+          
+          // API SUCCESS VE SCHEDULED KONTROLÜ - REZERVASYON OLUŞTURULDU MU?
+          if (data['success'] == true && data['status'] == 'scheduled') {
+            timer.cancel();
+            _driverSearchTimer?.cancel();
+            
+            print('📅 REZERVASYON OLUŞTURULDU! Status: scheduled');
+            
+            // Modal'ı kapat
+            if (modalContext.mounted) {
+              Navigator.of(modalContext).pop();
+            }
+            
+            // Rezervasyon dialogu göster
+            if (mounted) {
+              await Future.delayed(const Duration(milliseconds: 300));
+              _showReservationCreatedDialog(data);
+            }
+            return;
+          }
           
           // API SUCCESS VE SÜRÜCÜ KABUL KONTROLÜ!
           if (data['success'] == true && (data['status'] == 'accepted' || data['status'] == 'confirmed')) {
@@ -2173,6 +2222,169 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               foregroundColor: Colors.white,
             ),
             child: const Text('Tamam'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // ✅ YENİ: REZERVASYON OLUŞTURULDU DİALOGU (30 SANİYE SONRA)
+  void _showReservationCreatedDialog(Map<String, dynamic> rideData) {
+    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+    final rideId = rideData['ride_id'] ?? rideData['id'] ?? 0;
+    final scheduledTime = rideData['scheduled_time'] ?? '';
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: themeProvider.isDarkMode ? Colors.grey[900] : Colors.white,
+        title: Row(
+          children: [
+            const Icon(Icons.check_circle, color: Colors.green, size: 28),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Rezervasyon Oluşturuldu',
+                style: TextStyle(
+                  color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Anlık vale bulunamadı, talebiniz rezervasyona alındı.',
+              style: TextStyle(
+                color: themeProvider.isDarkMode ? Colors.grey[300] : Colors.grey[700],
+                fontSize: 15,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.green),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.calendar_month, color: Colors.green, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Rezervasyon #$rideId',
+                        style: const TextStyle(
+                          color: Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (scheduledTime.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '⏰ Planlanan saat: $scheduledTime',
+                      style: TextStyle(
+                        color: themeProvider.isDarkMode ? Colors.grey[300] : Colors.grey[700],
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '✅ En kısa sürede size uygun vale atanacaktır.',
+              style: TextStyle(
+                color: themeProvider.isDarkMode ? Colors.green[300] : Colors.green[700],
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        actionsAlignment: MainAxisAlignment.spaceBetween,
+        actions: [
+          // İPTAL ET BUTONU (Sol)
+          TextButton.icon(
+            icon: const Icon(Icons.cancel_outlined, color: Colors.red, size: 20),
+            label: const Text('İptal Et', style: TextStyle(color: Colors.red)),
+            onPressed: () async {
+              print('🚫 Rezervasyon iptal ediliyor...');
+              try {
+                final adminApi = AdminApiProvider();
+                final prefs = await SharedPreferences.getInstance();
+                final customerId = prefs.getString('user_id') ?? '0';
+                
+                final cancelResult = await adminApi.cancelRideRequest(
+                  customerId: customerId,
+                  reason: 'customer_cancelled_reservation',
+                );
+                
+                Navigator.of(context).pop();
+                
+                if (cancelResult['success'] == true) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('✅ Rezervasyon iptal edildi'),
+                      backgroundColor: Colors.green,
+                    ),
+                  );
+                }
+              } catch (e) {
+                print('❌ İptal hatası: $e');
+              }
+            },
+          ),
+          // SAĞ TARAF BUTONLARI
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ŞİRKETİ ARAYIN BUTONU
+              TextButton.icon(
+                icon: const Icon(Icons.phone, color: Color(0xFFFFD700), size: 20),
+                label: const Text('Şirketi Arayın', style: TextStyle(color: Color(0xFFFFD700))),
+                onPressed: () async {
+                  print('📞 Şirket aranıyor...');
+                  try {
+                    final uri = Uri(scheme: 'tel', path: '05334488253');
+                    await launchUrl(uri);
+                    Navigator.of(context).pop();
+                    // Ana sayfa stack'ini temizle ve MainScreen'e dön
+                    Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
+                  } catch (e) {
+                    print('❌ Arama hatası: $e');
+                  }
+                },
+              ),
+              const SizedBox(width: 8),
+              // TAMAM BUTONU - REZERVASYONLAR TABINA GEÇ
+              ElevatedButton.icon(
+                icon: const Icon(Icons.check, color: Colors.white, size: 20),
+                label: const Text('Tamam', style: TextStyle(color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                ),
+                onPressed: () {
+                  print('✅ Tamam - Ana sayfaya dönülüyor');
+                  Navigator.of(context).pop();
+                  // Ana sayfa stack'ini temizle ve MainScreen'e dön
+                  // Not: Bu sayede alt menü korunur ve rezervasyon görünür olur
+                  Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
+                },
+              ),
+            ],
           ),
         ],
       ),
@@ -4166,7 +4378,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       print('💰 Estimated Price: ₺${_estimatedPrice ?? 0.0}');
       print('👤 Customer ID: ${authProvider.customerId}');
       print('⏰ Seçilen zaman: $_selectedTimeOption');
-      print('🎯 AKILLI SİSTEM: create_ride_request.php içinde 15sn 10km → 15sn 100km otomatik!');
+      print('🎯 AKILLI SİSTEM: create_ride_request.php içinde 15sn 20km → 15sn 60km otomatik!');
       
       // ZAMAN BAZLI RİDE OLUŞTUR - DETAYLI ZAMAN LOGu!
       DateTime? scheduledDateTime;
@@ -4180,23 +4392,28 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           print('🕰️ Özel tarih talep: $_selectedDateTime ($timeLog)');
         } else {
           // "1 Saat Sonra", "2 Saat Sonra" gibi otomatik seçenekler
+          // ✅ SUNUCU SAATİ KULLAN! (Telefon saati yanlış olabilir)
+          final serverTime = await TimeService.getServerTime();
+          print('🌐 Sunucu saati: $serverTime');
+          
           if (_selectedTimeOption == '1 Saat Sonra') {
-            scheduledDateTime = DateTime.now().add(const Duration(hours: 1));
+            scheduledDateTime = serverTime.add(const Duration(hours: 1));
           } else if (_selectedTimeOption == '2 Saat Sonra') {
-            scheduledDateTime = DateTime.now().add(const Duration(hours: 2));
+            scheduledDateTime = serverTime.add(const Duration(hours: 2));
           } else if (_selectedTimeOption == '30 Dakika Sonra') {
-            scheduledDateTime = DateTime.now().add(const Duration(minutes: 30));
+            scheduledDateTime = serverTime.add(const Duration(minutes: 30));
           } else {
             // Diğer seçeneklerde 30 dakika sonra
-            scheduledDateTime = DateTime.now().add(const Duration(minutes: 30));
+            scheduledDateTime = serverTime.add(const Duration(minutes: 30));
           }
           timeLog = scheduledDateTime!.toIso8601String();
           print('🕰️ Otomatik zaman talep: $_selectedTimeOption → $scheduledDateTime ($timeLog)');
         }
       } else {
-        scheduledDateTime = DateTime.now();
-        timeLog = 'Hemen talep';
-        print('⚡ Hemen talep: $scheduledDateTime');
+        // "Hemen" seçildi - scheduled_time NULL olacak
+        scheduledDateTime = null;
+        timeLog = 'Hemen talep (scheduled_time=null)';
+        print('⚡ Hemen talep: scheduledDateTime=null');
       }
       
       // MERKEZİ FONKSİYON İLE DOĞRULAMA - SERVER TIME!
@@ -7092,7 +7309,7 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
       final check1 = await _checkRideAccepted(rideId);
       if (check1) return;
       
-      print('⏩ Aşama 2 - 100km...');
+      print('⏩ Aşama 2 - 60km...');
       await _searchDriversStage(rideId, 2);
       await Future.delayed(const Duration(seconds: 15));
       

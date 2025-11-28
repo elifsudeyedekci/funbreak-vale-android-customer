@@ -8,6 +8,7 @@ import '../../providers/theme_provider.dart';
 import '../../providers/admin_api_provider.dart';
 import '../../providers/ride_provider.dart'; // 🔥 RideProvider temizliği için!
 import '../../services/customer_cards_api.dart'; // Kart yönetimi için
+import '../payment/card_payment_screen.dart'; // 💳 VakıfBank 3D Secure ödeme
 
 // MÜŞTERİ ÖDEME VE PUANLAMA EKRANI!
 class RidePaymentScreen extends StatefulWidget {
@@ -55,9 +56,15 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
   // SAATLİK PAKET BİLGİSİ
   String _hourlyPackageLabel = '';
   
+  // ÖZEL KONUM BİLGİSİ
+  Map<String, dynamic>? _specialLocation;
+  
   @override
   void initState() {
     super.initState();
+    
+    // ✅ ÖZEL KONUM BİLGİSİ AL (varsa)
+    _specialLocation = widget.rideStatus?['special_location'] ?? widget.rideDetails?['special_location'];
     
     // ÖNCELİKLE ride status'tan verileri al
     _waitingMinutes = widget.rideStatus['waiting_minutes'] ?? 0;
@@ -228,23 +235,49 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                                      widget.rideDetails['estimated_price'] ?? 
                                      estimatedPrice;
       
+      // Backend'den ayrı değerleri çek (varsa)
+      final backendBasePrice = widget.rideStatus['base_price_only'] ?? 
+                                widget.rideStatus['distance_only_price'] ?? 
+                                widget.rideDetails['base_price_only'];
+      
       // final_price varsa onu kullan (tamamlanmış yolculuk)
       if (finalPrice != null && finalPrice > 0) {
         _totalPrice = double.tryParse(finalPrice.toString()) ?? 0.0;
-        _basePrice = _totalPrice; // Tam tutar
-        _waitingFee = 0.0; // Backend'de zaten hesaplanmış
-        print('💳 ÖDEME: final_price kullanılıyor (completed): ₺${_totalPrice.toStringAsFixed(2)}');
       } else {
         // Backend'den gelen estimated_price kullan
         _totalPrice = double.tryParse(backendEstimatedPrice.toString()) ?? 0.0;
-        _basePrice = _totalPrice; // Backend zaten toplam hesaplamış
-        _waitingFee = 0.0; // Backend'de zaten dahil
-        print('💳 ÖDEME: Backend estimated_price (bekleme dahil): ₺${_totalPrice.toStringAsFixed(2)}');
+      }
+      
+      // MESAFE VE BEKLEME AYRI HESAPLA
+      if (backendBasePrice != null && backendBasePrice > 0) {
+        // Backend base_price_only gönderiyor (mesafe ücreti)
+        _basePrice = double.tryParse(backendBasePrice.toString()) ?? 0.0;
+        // Bekleme = Toplam - Mesafe
+        _waitingFee = _totalPrice - _basePrice;
+        print('💳 ÖDEME: Backend base_price_only kullanıldı - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
+      } else {
+        // Backend base_price_only göndermemişse manuel hesapla
+        _waitingFee = _calculateWaitingFee(_waitingMinutes);
+        _basePrice = _totalPrice - _waitingFee;
+        print('💳 ÖDEME: Manuel hesaplama - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
       }
     }
     
     // setState ile UI güncelle
     setState(() {});
+  }
+  
+  // BEKLEME ÜCRETİ HESAPLAMA
+  double _calculateWaitingFee(int waitingMinutes) {
+    if (waitingMinutes <= _waitingFreeMinutes) {
+      return 0.0; // Ücretsiz dakika içinde
+    }
+    
+    final chargeableMinutes = waitingMinutes - _waitingFreeMinutes;
+    final intervals = (chargeableMinutes / _waitingIntervalMinutes).ceil();
+    final fee = intervals * _waitingFeePerInterval;
+    
+    return fee;
   }
   
   @override
@@ -298,6 +331,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                   
                   _buildSummaryRow('📍 Nereden', widget.rideDetails['pickup_address'] ?? ''),
                   const SizedBox(height: 8),
+                  
+                  // ARA DURAKLAR
+                  ..._buildWaypointsSummary(),
+                  
                   _buildSummaryRow('🎯 Nereye', widget.rideDetails['destination_address'] ?? ''),
                   const SizedBox(height: 8),
                   _buildSummaryRow('📏 Mesafe', '${_distance.toStringAsFixed(1)} km'),
@@ -586,6 +623,31 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                       ),
                     ),
                   ],
+                  
+                  // 🗺️ ÖZEL KONUM BİLGİSİ (varsa)
+                  if (_specialLocation != null && (_specialLocation!['fee'] as num?) != null && (_specialLocation!['fee'] as num) > 0) ...[
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.blue),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.location_on, color: Colors.blue, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '🗺️ ${_specialLocation!['name'] ?? 'Özel Bölge'}: +₺${((_specialLocation!['fee'] as num).toDouble()).toStringAsFixed(2)}',
+                              style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -638,16 +700,16 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
     );
   }
   
-  Widget _buildSummaryRow(String label, String value) {
+  Widget _buildSummaryRow(String label, String value, {Color? color}) {
     return Row(
       children: [
         SizedBox(
           width: 100,
           child: Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
-              color: Colors.grey,
+              color: color ?? Colors.grey,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -655,9 +717,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
         Expanded(
           child: Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,
+              color: color,
             ),
           ),
         ),
@@ -797,17 +860,62 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
       return;
     }
     
+    final prefs = await SharedPreferences.getInstance();
+    final customerId = prefs.getString('user_id') ?? '0';
+    final finalAmount = _totalPrice - _discountAmount; // İndirim düşülmüş tutar!
+    
+    // 💳 KART ÖDEMESİ - VakıfBank 3D Secure
+    if (_selectedPaymentMethod == 'card') {
+      // İptal ücreti mi yoksa normal ödeme mi?
+      final isCancellationFee = widget.rideStatus['is_cancellation_fee'] == true;
+      final paymentType = isCancellationFee ? 'cancellation_fee' : 'ride_payment';
+      
+      // Kayıtlı kart mı yoksa yeni kart mı?
+      Map<String, dynamic>? selectedCardData;
+      if (_selectedCardId != null && _savedCards.isNotEmpty) {
+        // Seçili kartın bilgilerini bul
+        try {
+          selectedCardData = _savedCards.firstWhere(
+            (c) => c['id']?.toString() == _selectedCardId,
+            orElse: () => {},
+          );
+          if (selectedCardData.isEmpty) selectedCardData = null;
+        } catch (e) {
+          selectedCardData = null;
+        }
+      }
+      
+      // 3D Secure ödeme ekranına git
+      final result = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (context) => CardPaymentScreen(
+            rideId: int.tryParse(widget.rideDetails['ride_id']?.toString() ?? '0') ?? 0,
+            customerId: int.tryParse(customerId) ?? 0,
+            amount: finalAmount,
+            paymentType: paymentType,
+            savedCardId: _selectedCardId, // Kayıtlı kart ID (varsa)
+            savedCardData: selectedCardData, // Kayıtlı kart bilgileri (varsa)
+          ),
+        ),
+      );
+      
+      // 3D Secure ödeme başarılı mı?
+      if (result == true) {
+        // Ödeme başarılı - persistence temizle ve ana sayfaya git
+        await _cleanupAndGoHome();
+      }
+      // result false veya null ise kullanıcı geri döndü, bir şey yapma
+      return;
+    }
+    
+    // 🏦 HAVALE/EFT ÖDEMESİ - Mevcut sistem
     setState(() {
       _isProcessingPayment = true;
     });
     
     try {
       final adminApi = AdminApiProvider();
-      final prefs = await SharedPreferences.getInstance();
-      final customerId = prefs.getString('user_id') ?? '0';
-      
-      // 1. Ödeme işle
-      final finalAmount = _totalPrice - _discountAmount; // İndirim düşülmüş tutar!
       
       print('💳 === ÖDEME İŞLEMİ BAŞLIYOR ===');
       print('👤 Customer ID: $customerId');
@@ -957,6 +1065,58 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
         ],
       ),
     );
+  }
+  
+  // 💳 3D SECURE ÖDEME SONRASI TEMİZLİK VE ANA SAYFAYA GİT
+  Future<void> _cleanupAndGoHome() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      // RideProvider'ı temizle
+      if (mounted) {
+        final rideProvider = Provider.of<RideProvider>(context, listen: false);
+        rideProvider.clearCurrentRide();
+        print('✅ 3D Secure ödeme sonrası: RideProvider temizlendi');
+      }
+      
+      // Persistence temizle
+      await prefs.remove('customer_current_ride');
+      await prefs.remove('active_ride_id');
+      await prefs.remove('active_ride_status');
+      await prefs.remove('pending_payment_ride_id');
+      await prefs.remove('current_ride_persistence');
+      await prefs.remove('has_active_ride');
+      
+      // Puanlama bilgisini kaydet
+      await prefs.setString('pending_rating_ride_id', widget.rideDetails['ride_id'].toString());
+      await prefs.setString('pending_rating_driver_id', widget.rideDetails['driver_id'].toString());
+      await prefs.setString('pending_rating_driver_name', widget.rideDetails['driver_name'] ?? 'Şoförünüz');
+      await prefs.setString('pending_rating_customer_id', widget.rideDetails['customer_id'].toString());
+      await prefs.setBool('has_pending_rating', true);
+      
+      print('✅ 3D Secure ödeme başarılı - Ana sayfaya yönlendiriliyor');
+      
+      // Başarı mesajı göster
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Ödeme başarıyla tamamlandı!'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      
+      // Ana sayfaya git
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
+      }
+    } catch (e) {
+      print('⚠️ 3D Secure ödeme sonrası temizlik hatası: $e');
+      if (mounted) {
+        Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
+      }
+    }
   }
   
   // PUANLAMA HATIRLATMASI KAYDET VE ANA EKRANA GİT
@@ -1491,17 +1651,14 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                 title: const Text('Yeni Kart Ekle', style: TextStyle(color: Colors.black)),
                 onTap: () {
                   Navigator.pop(sheetContext);
+                  // Yeni kart ekle seçildiğinde, savedCardId null olarak CardPaymentScreen açılacak
+                  // Bu sayede kart numarası giriş ekranı gösterilecek
                   if (mounted) {
                     setState(() {
                       _selectedPaymentMethod = 'card';
-                      _selectedCardId = null;
+                      _selectedCardId = null; // Yeni kart = savedCardId yok
                     });
                   }
-                  Future.delayed(const Duration(milliseconds: 250), () {
-                    if (mounted) {
-                      _showAddCardDialog();
-                    }
-                  });
                 },
               ),
               
@@ -1689,6 +1846,44 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
         ],
       ),
     );
+  }
+
+  // ARA DURAKLAR ÖZET OLUŞTUR
+  List<Widget> _buildWaypointsSummary() {
+    try {
+      final waypointsJson = widget.rideStatus['waypoints'] ?? widget.rideDetails['waypoints'];
+      
+      if (waypointsJson == null || waypointsJson.toString().isEmpty || waypointsJson.toString() == 'null') {
+        return [];
+      }
+      
+      List<dynamic> waypoints = [];
+      if (waypointsJson is String) {
+        waypoints = jsonDecode(waypointsJson);
+      } else if (waypointsJson is List) {
+        waypoints = waypointsJson;
+      }
+      
+      if (waypoints.isEmpty) {
+        return [];
+      }
+      
+      List<Widget> waypointWidgets = [];
+      for (int i = 0; i < waypoints.length; i++) {
+        final waypoint = waypoints[i];
+        final address = waypoint['address'] ?? waypoint['adres'] ?? waypoint['name'] ?? 'Ara Durak ${i + 1}';
+        
+        waypointWidgets.add(
+          _buildSummaryRow('🛣️ Ara Durak ${i + 1}', address, color: Colors.orange),
+        );
+        waypointWidgets.add(const SizedBox(height: 8));
+      }
+      
+      return waypointWidgets;
+    } catch (e) {
+      print('⚠️ Waypoints parse hatası (ödeme ekranı): $e');
+      return [];
+    }
   }
 
   @override

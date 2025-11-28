@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 import '../../providers/theme_provider.dart';
 import '../../services/customer_cards_api.dart';
 
-// ÖDEME YÖNTEMLERİ EKRANI - BACKEND ENTEGRE!
+// ÖDEME YÖNTEMLERİ EKRANI - VakıfBank 3D Secure Entegreli!
+// @version 2.0.0
+// @date 2025-11-27
 class PaymentMethodsScreen extends StatefulWidget {
   const PaymentMethodsScreen({Key? key}) : super(key: key);
 
@@ -558,26 +561,42 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
                 ],
               ),
               
-              const SizedBox(height: 16),
+                              const SizedBox(height: 16),
               
-              // GÜVENLİK BİLGİSİ
+              // GÜVENLİK BİLGİSİ - 3D Secure
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: Colors.green.withOpacity(0.1),
                   borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.green.withOpacity(0.3)),
                 ),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.security, color: Colors.green, size: 16),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Kart bilgileriniz güvenli şekilde şifrelenerek saklanır',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.green[700],
+                    Row(
+                      children: [
+                        const Icon(Icons.verified_user, color: Colors.green, size: 18),
+                        const SizedBox(width: 8),
+                        Text(
+                          '3D Secure ile Korumalı',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green[700],
+                          ),
                         ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '• Kartınız VakıfBank 3D Secure ile doğrulanır\n'
+                      '• 0.01 ₺ doğrulama ücreti çekilir ve anında iade edilir\n'
+                      '• Kart bilgileriniz AES-256 ile şifrelenir',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.green[600],
+                        height: 1.4,
                       ),
                     ),
                   ],
@@ -609,10 +628,10 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
     );
   }
 
-  // KART KAYDETME - BACKEND ÇAĞRISI
+  // KART KAYDETME - VakıfBank 3D Secure ile Doğrulama
   void _saveCard(Map<String, dynamic>? editingCard, String cardNumber, String cardHolder, String expiry, String cvv) async {
     // Basit validasyon
-    if (editingCard == null && cardNumber.length < 16) {
+    if (editingCard == null && cardNumber.replaceAll(' ', '').length < 16) {
       _showError('Geçerli bir kart numarası girin');
       return;
     }
@@ -634,7 +653,7 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
 
     // KART KAYDETME/GÜNCELLEME
     if (editingCard != null) {
-      // Düzenleme modu - BACKEND
+      // Düzenleme modu - sadece varsayılan yapılabilir
       final success = await _cardsApi.updateCard(
         cardId: editingCard['id'],
         cardHolder: cardHolder.toUpperCase(),
@@ -661,41 +680,146 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
         }
         return;
       }
+      Navigator.pop(context);
     } else {
-      // Yeni kart ekleme - BACKEND
-      final result = await _cardsApi.addCard(
-        cardNumber: cardNumber,
-        cardHolder: cardHolder.toUpperCase(),
-        expiryDate: expiry,
-        cvv: cvv,
+      // ═══════════════════════════════════════════════════════════════
+      // YENİ KART EKLEME - 3D SECURE DOĞRULAMA
+      // 0.01 TL çekilir, doğrulanırsa kaydedilir, sonra iade edilir
+      // ═══════════════════════════════════════════════════════════════
+      
+      Navigator.pop(context); // Dialog'u kapat
+      
+      // Loading göster
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(color: Color(0xFFFFD700)),
+              const SizedBox(height: 16),
+              const Text('Kart doğrulanıyor...'),
+              const SizedBox(height: 8),
+              Text(
+                '0.01 ₺ doğrulama ücreti çekilecek ve hemen iade edilecek',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
       );
       
-      if (result != null && result['success'] == true && result['card'] != null) {
-        final newCard = result['card'];
+      try {
+        final result = await _cardsApi.addCard(
+          cardNumber: cardNumber,
+          cardHolder: cardHolder.toUpperCase(),
+          expiryDate: expiry,
+          cvv: cvv,
+        );
         
-        setState(() {
-          _savedCards.add(newCard);
-        });
+        // Loading'i kapat
+        if (mounted) Navigator.pop(context);
         
-        print('✅ Yeni kart eklendi: ${newCard['cardNumber']}');
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Yeni kart başarıyla eklendi'),
-              backgroundColor: Colors.green,
-            ),
-          );
+        if (result != null && result['success'] == true) {
+          if (result['requires_3d'] == true && result['acs_html'] != null) {
+            // 3D Secure sayfasını göster
+            print('🔐 3D Secure doğrulama gerekli');
+            _show3DSecureWebView(result['acs_html']);
+          } else {
+            // Direkt başarılı (3D Secure yok)
+            _loadCards(); // Kartları yenile
+            
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('✅ Kart başarıyla doğrulandı ve kaydedildi'),
+                  backgroundColor: Colors.green,
+                ),
+              );
+            }
+          }
+        } else {
+          if (mounted) {
+            _showError(result?['message'] ?? 'Kart doğrulanamadı');
+          }
         }
-      } else {
+      } catch (e) {
         if (mounted) {
-          _showError('Kart eklenemedi');
+          Navigator.pop(context); // Loading'i kapat
+          _showError('Bir hata oluştu: $e');
         }
-        return;
       }
     }
-
-    Navigator.pop(context);
+  }
+  
+  // 3D SECURE WEBVIEW GÖSTER
+  void _show3DSecureWebView(String acsHtml) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => Scaffold(
+          appBar: AppBar(
+            title: const Text('Kart Doğrulama'),
+            backgroundColor: const Color(0xFFFFD700),
+            foregroundColor: Colors.black,
+            leading: IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Kart doğrulama iptal edildi'),
+                    backgroundColor: Colors.orange,
+                  ),
+                );
+              },
+            ),
+          ),
+          body: WebViewWidget(
+            controller: WebViewController()
+              ..setJavaScriptMode(JavaScriptMode.unrestricted)
+              ..setNavigationDelegate(
+                NavigationDelegate(
+                  onPageStarted: (url) {
+                    print('📄 3D Secure sayfa: $url');
+                  },
+                  onNavigationRequest: (request) {
+                    // Deep link kontrolü - doğrulama tamamlandı
+                    if (request.url.contains('funbreakvale://') || 
+                        request.url.contains('card_verification_callback.php')) {
+                      // Doğrulama tamamlandı
+                      Navigator.pop(context);
+                      _loadCards(); // Kartları yenile
+                      
+                      if (request.url.contains('success=true')) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('✅ Kart başarıyla doğrulandı ve kaydedildi!'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('❌ Kart doğrulanamadı'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                      
+                      return NavigationDecision.prevent;
+                    }
+                    return NavigationDecision.navigate;
+                  },
+                ),
+              )
+              ..loadHtmlString(acsHtml),
+          ),
+        ),
+      ),
+    );
   }
 
   // HATA GÖSTERME

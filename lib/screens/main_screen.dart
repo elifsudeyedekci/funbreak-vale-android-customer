@@ -100,13 +100,14 @@ class _MainScreenState extends State<MainScreen> {
             print('   🆔 Ride ID: ${ride['id']}');
             print('   📊 Status: $rideStatus');
             
-            // SADECE GERÇEK AKTİF YOLCULUKLARI GÖSTER!
-            if (rideStatus == 'completed' || rideStatus == 'cancelled') {
-              print('⏸️ [MÜŞTERİ MAIN] Yolculuk TAMAMLANMIŞ ($rideStatus) - yönlendirme YAPILMAYACAK!');
+            // ❌ pending, scheduled, completed, cancelled → YOLCULUK EKRANI AÇILMAMALI!
+            // ✅ SADECE accepted veya in_progress → YOLCULUK EKRANI AÇILMALI!
+            if (rideStatus != 'accepted' && rideStatus != 'in_progress') {
+              print('📅 [MÜŞTERİ MAIN] Bekleyen/Tamamlanmış yolculuk ($rideStatus) - Yolculuk ekranı AÇILMAYACAK!');
               return;
             }
             
-            print('   🚗 Yolculuk ekranına YÖNLENDİRİLİYOR...');
+            print('   🚗 Vale KABUL ETTİ - Yolculuk ekranına YÖNLENDİRİLİYOR...');
             
             // Otomatik yolculuk ekranına git
             if (mounted) {
@@ -278,12 +279,12 @@ class _MainScreenState extends State<MainScreen> {
       },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8), // Azaltıldı - sarı alan yazının içine girmemesin
         decoration: BoxDecoration(
           color: isSelected 
               ? const Color(0xFFFFD700) 
               : Colors.transparent,
-          borderRadius: BorderRadius.circular(25),
+          borderRadius: BorderRadius.circular(20), // Daha küçük border radius
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,

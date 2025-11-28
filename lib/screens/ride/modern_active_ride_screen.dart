@@ -58,6 +58,9 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
   // ✅ TAHMİNİ FİYAT (SABİT - İlk rota fiyatı, BİR DAHA DEĞİŞMEZ!)
   double _initialEstimatedPrice = 0.0;
   
+  // ✅ ARAMA KONTROLÜ (İKİ KEZ ARAMA ENGEL!)
+  bool _isCalling = false;
+  
   // ✅ SAATLİK PAKET CACHE
   List<Map<String, double>> _cachedHourlyPackages = [];
   
@@ -1156,7 +1159,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
               ],
             ),
             child: ElevatedButton(
-              onPressed: () => _callDriverDirectly(),
+              onPressed: _isCalling ? null : () => _callDriverDirectly(),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.transparent,
                 shadowColor: Colors.transparent,
@@ -1370,14 +1373,19 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                   if (mounted) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (mounted) {
+                        // GÜNCEL TUTAR VE TÜM BİLGİLERİ AL - Backend'den!
+                        final currentTotal = double.tryParse(_calculateCurrentTotal()) ?? 0.0;
+                        
+                        // GÜNCEL ride status'ı oluştur - Backend'den gelen TÜM bilgilerle!
+                        final completedRideStatus = Map<String, dynamic>.from(_currentRideStatus);
+                        completedRideStatus['status'] = 'completed';
+                        completedRideStatus['final_price'] = currentTotal > 0 ? currentTotal : (_currentRideStatus['estimated_price'] ?? widget.rideDetails['estimated_price'] ?? 0);
+                        
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(
                             builder: (context) => RidePaymentScreen(
                               rideDetails: Map<String, dynamic>.from(widget.rideDetails),
-                              rideStatus: {
-                                'status': 'completed',
-                                'final_price': widget.rideDetails['estimated_price'] ?? 0,
-                              },
+                              rideStatus: completedRideStatus,
                             ),
                           ),
                         );
@@ -2045,6 +2053,12 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   // ŞİRKET KÖPRÜ ARAMA SİSTEMİ! ✅
   // ✅ NETGSM KÖPRÜ ARAMA SİSTEMİ! 🔥
   Future<void> _callDriverDirectly() async {
+    // ✅ İKİ KEZ ARAMA ENGEL!
+    if (_isCalling) {
+      print('⚠️ [MÜŞTERİ] Arama zaten devam ediyor, duplicate engellendi!');
+      return;
+    }
+    
     final driverName = _driverName();
     final driverPhone = _driverPhone();
     
@@ -2145,6 +2159,11 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   
   // ✅ KÖPRÜ ARAMASI BAŞLAT - BACKEND ÜZERİNDEN!
   Future<void> _initiateBridgeCall(int rideId, String driverPhone, String driverName) async {
+    // ✅ FLAG SET ET - ARAMA BAŞLADI!
+    setState(() {
+      _isCalling = true;
+    });
+    
     try {
       // Müşteri numarasını al
       final prefs = await SharedPreferences.getInstance();
@@ -2234,6 +2253,14 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
           ),
         );
       }
+    } finally {
+      // ✅ FLAG RESET - ARAMA BİTTİ!
+      if (mounted) {
+        setState(() {
+          _isCalling = false;
+        });
+      }
+      print('✅ [MÜŞTERİ] Arama flag reset edildi, yeni arama yapılabilir');
     }
   }
 

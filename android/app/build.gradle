@@ -29,9 +29,9 @@ if (flutterVersionName == null) {
 }
 
 android {
-    namespace "com.funbreakvale.customer"
+    namespace "com.funbreak.vale.customer"
     compileSdkVersion flutter.compileSdkVersion
-    ndkVersion flutter.ndkVersion
+    ndkVersion "27.0.12077973"  // 16KB page size için NDK 27+ gerekli
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -50,13 +50,14 @@ android {
     defaultConfig {
         applicationId "com.funbreak.vale.customer"
         minSdkVersion 24
-        targetSdkVersion flutter.targetSdkVersion
+        targetSdkVersion flutter.targetSdkVersion  // API 35 kullan (Google önerisi)
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
-        ndk {
-            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86_64'
-        }
+        // Manifest placeholders
+        manifestPlaceholders = [
+            applicationName: 'io.flutter.app.FlutterApplication'
+        ]
     }
 
     signingConfigs {
@@ -73,7 +74,16 @@ android {
             signingConfig signingConfigs.release
             minifyEnabled false
             shrinkResources false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    
+    // 16KB page size support - ABI splits
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+            universalApk true  // Universal APK oluştur (16KB için gerekli)
         }
     }
 }

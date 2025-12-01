@@ -461,7 +461,18 @@ class AdvancedNotificationService {
   static Future<void> _updateTokenOnServer(String token) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final userId = prefs.getString('user_id') ?? '0';
+      
+      // 🔍 user_id VEYA admin_user_id VEYA customer_id - hepsini dene!
+      String userId = prefs.getString('user_id') ?? 
+                      prefs.getString('admin_user_id') ?? 
+                      prefs.getInt('customer_id')?.toString() ?? '0';
+      
+      if (userId == '0') {
+        print('⚠️ FCM Token kaydetme atlandı - kullanıcı ID bulunamadı');
+        return;
+      }
+      
+      print('📤 FCM Token backend\'e gönderiliyor... (userId: $userId)');
       
       final response = await http.post(
         Uri.parse('$baseUrl/update_fcm_token.php'),
@@ -474,7 +485,14 @@ class AdvancedNotificationService {
       );
       
       if (response.statusCode == 200) {
-        print('✅ FCM Token sunucuya güncellendi');
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          print('✅ FCM Token sunucuya kaydedildi! (userId: $userId)');
+        } else {
+          print('⚠️ FCM Token kayıt yanıtı: ${data['message'] ?? 'bilinmiyor'}');
+        }
+      } else {
+        print('❌ FCM Token kayıt HTTP hatası: ${response.statusCode}');
       }
     } catch (e) {
       print('❌ Token güncelleme hatası: $e');

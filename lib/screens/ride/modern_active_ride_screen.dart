@@ -92,6 +92,30 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
       (widget.rideDetails['pickup_lng'] as num?)?.toDouble() ?? 28.9784,
     );
     
+    // ✅ ŞOFÖR KONUMU - SADECE GEÇERLİ BİR KONUM VARSA AYARLA!
+    // Sultanahmet (41.0082, 28.9784) varsayılan değil, gerçek konum olmalı!
+    // Önce driver_lat/driver_lng, sonra driver_current_lat/driver_current_lng dene
+    final double? lat = (widget.rideDetails['driver_lat'] as num?)?.toDouble() ?? 
+                        (widget.rideDetails['driver_current_lat'] as num?)?.toDouble();
+    final double? lng = (widget.rideDetails['driver_lng'] as num?)?.toDouble() ?? 
+                        (widget.rideDetails['driver_current_lng'] as num?)?.toDouble();
+    
+    if (lat != null && lng != null) {
+      // Sultanahmet koordinatları değilse ve geçerli Türkiye sınırları içindeyse kullan
+      final bool isValidCoord = (lat != 41.0082 || lng != 28.9784) && 
+                                (lat != 0 && lng != 0) &&
+                                (lat > 35 && lat < 43 && lng > 25 && lng < 45);
+      
+      if (isValidCoord) {
+        _driverLocation = LatLng(lat, lng);
+        print('📍 [MÜŞTERİ] İlk şoför konumu ayarlandı: $lat, $lng');
+      } else {
+        print('⚠️ [MÜŞTERİ] Şoför konumu geçersiz/varsayılan ($lat, $lng) - beklenecek...');
+      }
+    } else {
+      print('⚠️ [MÜŞTERİ] Şoför konumu henüz yok - API\'den beklenecek...');
+    }
+    
     // İlk marker'ları oluştur
     _updateMapMarkers();
     
@@ -388,11 +412,20 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   }
 
   String _driverName() {
+    // Önce _currentRideStatus'tan, sonra widget.rideDetails'ten al
     final dynamic fromStatus = _currentRideStatus['driver_name'];
     final dynamic fromDetails = widget.rideDetails['driver_name'];
-    final name = (fromStatus ?? fromDetails)?.toString().trim();
-    if (name == null || name.isEmpty) {
-      return 'Şoförünüz';
+    
+    // fromStatus öncelikli
+    String? name;
+    if (fromStatus != null && fromStatus.toString().trim().isNotEmpty && fromStatus.toString().trim() != 'Vale') {
+      name = fromStatus.toString().trim();
+    } else if (fromDetails != null && fromDetails.toString().trim().isNotEmpty && fromDetails.toString().trim() != 'Vale') {
+      name = fromDetails.toString().trim();
+    }
+    
+    if (name == null || name.isEmpty || name == 'Şoförünüz') {
+      return 'Vale Şoförünüz';
     }
     return name;
   }
@@ -1475,19 +1508,32 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
               print('   💰 Fiyat: ₺$calculatedPrice');
 
               // ŞOFÖR KONUM BİLGİLERİNİ AL! ✅
-              if (activeRide['driver_lat'] != null && activeRide['driver_lng'] != null) {
-                _driverLocation = LatLng(
-                  (activeRide['driver_lat'] as num).toDouble(),
-                  (activeRide['driver_lng'] as num).toDouble(),
-                );
+              // Önce driver_lat/driver_lng, sonra driver_current_lat/driver_current_lng dene
+              double? lat = (activeRide['driver_lat'] as num?)?.toDouble() ?? 
+                            (activeRide['driver_current_lat'] as num?)?.toDouble();
+              double? lng = (activeRide['driver_lng'] as num?)?.toDouble() ?? 
+                            (activeRide['driver_current_lng'] as num?)?.toDouble();
+              
+              if (lat != null && lng != null) {
+                // ✅ Sultanahmet koordinatları (varsayılan) değilse kullan!
+                // Ayrıca 0,0 koordinatlarını da filtrele
+                final bool isValidCoord = (lat != 41.0082 || lng != 28.9784) && 
+                                          (lat != 0 && lng != 0) &&
+                                          (lat > 35 && lat < 43 && lng > 25 && lng < 45); // Türkiye sınırları
                 
-                print('📍 [MÜŞTERİ] Şoför konumu güncellendi: ${_driverLocation!.latitude}, ${_driverLocation!.longitude}');
-                
-                // Harita marker'larını güncelle
-                _updateMapMarkers();
-                _updateRoutePolyline(); // ROTA ÇİZGİSİ EKLEYELİM!
+                if (isValidCoord) {
+                  _driverLocation = LatLng(lat, lng);
+                  
+                  print('📍 [MÜŞTERİ] Şoför konumu güncellendi: $lat, $lng');
+                  
+                  // Harita marker'larını güncelle
+                  _updateMapMarkers();
+                  _updateRoutePolyline(); // ROTA ÇİZGİSİ EKLEYELİM!
+                } else {
+                  print('⚠️ [MÜŞTERİ] Şoför konumu geçersiz/varsayılan ($lat, $lng) - gösterilmeyecek');
+                }
               } else {
-                print('Sofor konumu henuz alinamadi - API den gelecek');
+                print('⚠️ [MÜŞTERİ] Şoför konumu henüz alınamadı - API\'den beklenecek');
               }
               
               // Müşteri konumu (kendi konumunuz)
@@ -2050,14 +2096,99 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
     );
   }
 
-  // ŞİRKET KÖPRÜ ARAMA SİSTEMİ! ✅
-  // ✅ NETGSM KÖPRÜ ARAMA SİSTEMİ! 🔥
+  // ŞİRKETİ ARA POPUP - Alt bardaki "Ara" butonu için
+  void _showCompanyCallPopup() {
+    const companyPhone = '0533 448 82 53';
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.business, color: Color(0xFFFFD700), size: 28),
+            SizedBox(width: 12),
+            Text('📞 Şirketi Ara', style: TextStyle(color: Colors.white, fontSize: 18)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.support_agent, color: Color(0xFFFFD700), size: 60),
+            const SizedBox(height: 16),
+            const Text(
+              'FunBreak Vale müşteri hizmetleri ile iletişime geçebilirsiniz.',
+              style: TextStyle(color: Colors.white, fontSize: 15),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFD700).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFFD700)),
+              ),
+              child: const Column(
+                children: [
+                  Text(
+                    '📞 Şirket Numarası',
+                    style: TextStyle(color: Color(0xFFFFD700), fontSize: 12),
+                  ),
+                  SizedBox(height: 8),
+                  Text(
+                    companyPhone,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Kapat', style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              final uri = Uri(scheme: 'tel', path: companyPhone.replaceAll(' ', ''));
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri);
+              }
+            },
+            icon: const Icon(Icons.phone, color: Colors.black),
+            label: const Text('Şirketi Ara', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFFD700),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ✅ NETGSM KÖPRÜ ARAMA SİSTEMİ! 🔥 - "Şoförü Ara" butonu için
   Future<void> _callDriverDirectly() async {
-    // ✅ İKİ KEZ ARAMA ENGEL!
+    // ✅ İKİ KEZ ARAMA/POPUP ENGEL!
     if (_isCalling) {
-      print('⚠️ [MÜŞTERİ] Arama zaten devam ediyor, duplicate engellendi!');
+      print('⚠️ [MÜŞTERİ] Arama/popup zaten açık, duplicate engellendi!');
       return;
     }
+    
+    // ✅ POPUP AÇILMADAN ÖNCE FLAG SET ET!
+    setState(() {
+      _isCalling = true;
+    });
     
     final driverName = _driverName();
     final driverPhone = _driverPhone();
@@ -2069,11 +2200,12 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
     // Köprü hattı numarası (SABİT!)
     const bridgeNumber = '0216 606 45 10';
     
-    print('📞 [MÜŞTERİ] Köprü arama başlatılıyor - Şoför: $driverName');
+    print('📞 [MÜŞTERİ] Köprü arama popup açılıyor - Şoför: $driverName');
     
     // Bilgilendirme ve onay dialogu
     showDialog(
       context: context,
+      barrierDismissible: false, // ✅ Dışarı tıklayarak kapatmayı engelle!
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A2E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -2136,12 +2268,22 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              Navigator.pop(context);
+              // ✅ VAZGEÇ - FLAG RESET!
+              if (mounted) {
+                setState(() {
+                  _isCalling = false;
+                });
+              }
+              print('📞 [MÜŞTERİ] Arama iptal edildi, flag reset');
+            },
             child: const Text('Vazgeç', style: TextStyle(color: Colors.white70)),
           ),
           ElevatedButton.icon(
             onPressed: () async {
               Navigator.pop(context);
+              // ✅ _isCalling flag'i _initiateBridgeCall içinde yönetiliyor
               await _initiateBridgeCall(rideId, driverPhone, driverName);
             },
             icon: const Icon(Icons.phone, color: Colors.white),
@@ -2159,10 +2301,8 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   
   // ✅ KÖPRÜ ARAMASI BAŞLAT - BACKEND ÜZERİNDEN!
   Future<void> _initiateBridgeCall(int rideId, String driverPhone, String driverName) async {
-    // ✅ FLAG SET ET - ARAMA BAŞLADI!
-    setState(() {
-      _isCalling = true;
-    });
+    // ✅ _isCalling flag zaten _callDriverDirectly'de true yapıldı!
+    // Sadece API çağrısı ve telefon açma işlemi yapılır
     
     try {
       // Müşteri numarasını al
@@ -2714,6 +2854,25 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   }
   
   
+  // ✅ YOLCULUK MESAFESİ - Backend'den gelen değer
+  String _getRideDistance() {
+    // Backend'den gelen mesafe değerlerini kontrol et
+    final distance = _currentRideStatus['total_distance'] ??
+                     _currentRideStatus['estimated_distance'] ??
+                     _currentRideStatus['distance_km'] ??
+                     widget.rideDetails['total_distance'] ??
+                     widget.rideDetails['estimated_distance'] ??
+                     widget.rideDetails['distance_km'] ??
+                     widget.rideDetails['distance'];
+    
+    if (distance != null) {
+      final distanceValue = double.tryParse(distance.toString()) ?? 0.0;
+      return distanceValue.toStringAsFixed(1);
+    }
+    
+    return '0.0';
+  }
+
   // SCHEDULED TIME GÖSTER İM - MÜŞTERİ AKTİF YOLCULUK EKRANINDA!
   String _getScheduledTimeDisplay() {
     try {
@@ -2754,12 +2913,144 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   }
 
   // ROTA ÇİZGİSİ GÜNCELLE - ŞOFÖRDEN MÜŞTERİYE! ✅
+  // Google Directions API ile gerçek yol rotası
+  List<LatLng> _routePoints = []; // Rota noktaları cache
+  LatLng? _lastDriverLocationForRoute; // Son rota çizilen konum
+  
   void _updateRoutePolyline() {
+    if (_driverLocation == null || _customerLocation == null) return;
+    
+    // Şoför konumu önemli ölçüde değiştiyse yeni rota çek (50 metre)
+    if (_lastDriverLocationForRoute == null || 
+        _haversineDistance(
+          _lastDriverLocationForRoute!.latitude, 
+          _lastDriverLocationForRoute!.longitude,
+          _driverLocation!.latitude,
+          _driverLocation!.longitude
+        ) > 0.05) { // 50 metre
+      _fetchRouteFromDirectionsAPI();
+    } else {
+      // Mevcut rota ile güncelle
+      _drawRoutePolyline();
+    }
+  }
+  
+  // Google Directions API'den gerçek yol rotası al
+  Future<void> _fetchRouteFromDirectionsAPI() async {
+    if (_driverLocation == null || _customerLocation == null) return;
+    
+    try {
+      final String apiKey = 'AIzaSyAmPUh6vlin_kvFvssOyKHz5BBjp5WQMaY';
+      final String origin = '${_driverLocation!.latitude},${_driverLocation!.longitude}';
+      final String destination = '${_customerLocation!.latitude},${_customerLocation!.longitude}';
+      
+      final String url = 'https://maps.googleapis.com/maps/api/directions/json'
+          '?origin=$origin'
+          '&destination=$destination'
+          '&mode=driving'
+          '&key=$apiKey';
+      
+      final response = await http.get(Uri.parse(url));
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        
+        if (data['status'] == 'OK' && data['routes'].isNotEmpty) {
+          // Encoded polyline'ı decode et
+          final String encodedPolyline = data['routes'][0]['overview_polyline']['points'];
+          _routePoints = _decodePolyline(encodedPolyline);
+          _lastDriverLocationForRoute = _driverLocation;
+          
+          print('🛣️ [MÜŞTERİ] Gerçek yol rotası alındı: ${_routePoints.length} nokta');
+          
+          _drawRoutePolyline();
+        } else {
+          print('⚠️ [MÜŞTERİ] Directions API rota bulunamadı: ${data['status']}');
+          _drawStraightLine(); // Fallback: düz çizgi
+        }
+      } else {
+        print('❌ [MÜŞTERİ] Directions API hatası: ${response.statusCode}');
+        _drawStraightLine(); // Fallback: düz çizgi
+      }
+    } catch (e) {
+      print('❌ [MÜŞTERİ] Rota çizme hatası: $e');
+      _drawStraightLine(); // Fallback: düz çizgi
+    }
+  }
+  
+  // Encoded polyline'ı decode et (Google format)
+  List<LatLng> _decodePolyline(String encoded) {
+    List<LatLng> points = [];
+    int index = 0;
+    int lat = 0;
+    int lng = 0;
+    
+    while (index < encoded.length) {
+      int shift = 0;
+      int result = 0;
+      int b;
+      
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      
+      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      lat += dlat;
+      
+      shift = 0;
+      result = 0;
+      
+      do {
+        b = encoded.codeUnitAt(index++) - 63;
+        result |= (b & 0x1F) << shift;
+        shift += 5;
+      } while (b >= 0x20);
+      
+      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
+      lng += dlng;
+      
+      points.add(LatLng(lat / 1E5, lng / 1E5));
+    }
+    
+    return points;
+  }
+  
+  // Rota çizgisini çiz (gerçek yol)
+  void _drawRoutePolyline() {
+    if (_routePoints.isEmpty || _driverLocation == null || _customerLocation == null) {
+      _drawStraightLine();
+      return;
+    }
+    
+    final Set<Polyline> newPolylines = {};
+    
+    // Gerçek yol rotası - mavi renk, kalın çizgi
+    newPolylines.add(
+      Polyline(
+        polylineId: const PolylineId('driver_to_customer_route'),
+        points: _routePoints,
+        color: const Color(0xFF4285F4), // Google Maps mavisi
+        width: 5,
+        startCap: Cap.roundCap,
+        endCap: Cap.roundCap,
+      ),
+    );
+    
+    setState(() {
+      _polylines = newPolylines;
+    });
+    
+    print('🛣️ [MÜŞTERİ] Gerçek yol rotası çizildi: ${_routePoints.length} nokta');
+  }
+  
+  // Fallback: Düz çizgi çiz (API başarısız olursa)
+  void _drawStraightLine() {
     if (_driverLocation == null || _customerLocation == null) return;
     
     final Set<Polyline> newPolylines = {};
     
-    // Şoförden müşteriye siyah çizgi (düz çizgi - basit)
     newPolylines.add(
       Polyline(
         polylineId: const PolylineId('driver_to_customer'),
@@ -2776,7 +3067,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
       _polylines = newPolylines;
     });
     
-    print('🛣️ [MÜŞTERİ] Şoför → Müşteri rota çizgisi güncellendi');
+    print('🛣️ [MÜŞTERİ] Düz çizgi rota çizildi (fallback)');
   }
   
   // MODERN ALT BAR - YOLCULUK EKRANINA ÖZEL! ✅
@@ -2816,12 +3107,12 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
               onTap: () => _openMessaging(),
             ),
             
-            // Telefon Butonu - DİREKT ŞOFÖR KÖPRÜ!
+            // Telefon Butonu - ŞİRKETİ ARA POPUP!
             _buildBottomBarItem(
               icon: Icons.phone,
               label: 'Ara',
               isActive: false,
-              onTap: () => _callDriverDirectly(),
+              onTap: () => _showCompanyCallPopup(),
             ),
             
             // Yolculuk Durumu
@@ -2954,11 +3245,17 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
               'Vale Gelme Saati: ${_getScheduledTimeDisplay()}',
               style: const TextStyle(color: Colors.orange),
             ),
+            const SizedBox(height: 8),
+            // ✅ YOLCULUK MESAFESİ - Backend'den gelen değer
+            Text(
+              'Yolculuk Mesafesi: ${_getRideDistance()} km',
+              style: const TextStyle(color: Colors.white70),
+            ),
             if (_driverLocation != null) ...[
-              const SizedBox(height: 8),
+              const SizedBox(height: 4),
               Text(
-                'Mesafe: ${_calculateDriverDistance().toStringAsFixed(1)} km',
-                style: const TextStyle(color: Colors.white70),
+                'Şoför Uzaklığı: ${_calculateDriverDistance().toStringAsFixed(1)} km',
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
               ),
             ],
           ],
@@ -3040,7 +3337,9 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   // ANLıK KM HESAPLAMA - ŞOFÖRDEN GELİYOR
   String _getCurrentKm() {
     final currentKm = _currentRideStatus['current_km']?.toString() ?? '0.0';
-    return currentKm;
+    // ✅ Her zaman 0.0 formatında göster (tek ondalık)
+    final kmValue = double.tryParse(currentKm) ?? 0.0;
+    return kmValue.toStringAsFixed(1);
   }
   
   // ANLıK BEKLEME SÜRESİ - ŞOFÖRDEN GELİYOR

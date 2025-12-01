@@ -58,6 +58,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
   
   // ÖZEL KONUM BİLGİSİ
   Map<String, dynamic>? _specialLocation;
+  double _locationExtraFee = 0.0; // ✅ ÖZEL KONUM ÜCRETİ
   
   @override
   void initState() {
@@ -65,6 +66,16 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
     
     // ✅ ÖZEL KONUM BİLGİSİ AL (varsa)
     _specialLocation = widget.rideStatus?['special_location'] ?? widget.rideDetails?['special_location'];
+    
+    // ✅ ÖZEL KONUM ÜCRETİ AL
+    _locationExtraFee = double.tryParse(
+      widget.rideStatus['location_extra_fee']?.toString() ?? 
+      widget.rideDetails['location_extra_fee']?.toString() ?? '0'
+    ) ?? 0.0;
+    
+    if (_locationExtraFee > 0) {
+      print('🗺️ ÖDEME: Özel konum ücreti: ₺${_locationExtraFee.toStringAsFixed(0)}');
+    }
     
     // ÖNCELİKLE ride status'tan verileri al
     _waitingMinutes = widget.rideStatus['waiting_minutes'] ?? 0;
@@ -252,14 +263,14 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
       if (backendBasePrice != null && backendBasePrice > 0) {
         // Backend base_price_only gönderiyor (mesafe ücreti)
         _basePrice = double.tryParse(backendBasePrice.toString()) ?? 0.0;
-        // Bekleme = Toplam - Mesafe
-        _waitingFee = _totalPrice - _basePrice;
-        print('💳 ÖDEME: Backend base_price_only kullanıldı - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
+        // Bekleme = Toplam - Mesafe - Özel Konum Ücreti
+        _waitingFee = _totalPrice - _basePrice - _locationExtraFee;
+        print('💳 ÖDEME: Backend base_price_only kullanıldı - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Özel Konum: ₺${_locationExtraFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
       } else {
         // Backend base_price_only göndermemişse manuel hesapla
         _waitingFee = _calculateWaitingFee(_waitingMinutes);
-        _basePrice = _totalPrice - _waitingFee;
-        print('💳 ÖDEME: Manuel hesaplama - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
+        _basePrice = _totalPrice - _waitingFee - _locationExtraFee;
+        print('💳 ÖDEME: Manuel hesaplama - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Özel Konum: ₺${_locationExtraFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
       }
     }
     
@@ -377,6 +388,13 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                     _buildPaymentRow('⏰ Bekleme Ücreti', '₺${_waitingFee.toStringAsFixed(2)} ($_waitingMinutes dk)', subtitle: 'İlk $_waitingFreeMinutes dk ücretsiz, sonrası her $_waitingIntervalMinutes dk ₺${_waitingFeePerInterval.toStringAsFixed(0)}'),
                   if (_waitingMinutes <= _waitingFreeMinutes && _waitingMinutes > 0 && _hourlyPackageLabel.isEmpty)
                     _buildPaymentRow('⏰ Bekleme (Ücretsiz)', '$_waitingMinutes dakika', isFree: true),
+                  // ✅ ÖZEL KONUM ÜCRETİ GÖSTERİMİ (Komisyonsuz!)
+                  if (_locationExtraFee > 0)
+                    _buildPaymentRow(
+                      '🗺️ Özel Konum Ücreti', 
+                      '+₺${_locationExtraFee.toStringAsFixed(2)}',
+                      subtitle: _specialLocation != null ? _specialLocation!['name'] ?? 'Özel Bölge' : 'Özel Bölge',
+                    ),
                   if (_hourlyPackageLabel.isNotEmpty)
                     _buildPaymentRow('📦 $_hourlyPackageLabel', 'Paket fiyatına dahil', subtitle: 'Saatlik pakette bekleme ücreti alınmaz'),
                   if (_discountApplied && _discountAmount > 0)
@@ -539,52 +557,61 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                   Row(
                     children: [
                       Expanded(
-                        child: TextField(
-                          controller: _discountCodeController,
-                          enabled: !_discountApplied, // 🔥 İndirim uygulandıysa YAZMA ENGELLE!
-                          readOnly: _discountApplied, // 🔥 Uygulandıysa sadece oku
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: _discountApplied ? Colors.grey : Colors.black,
-                          ),
-                          decoration: InputDecoration(
-                            hintText: 'İndirim kodu',
-                            hintStyle: TextStyle(fontSize: 12, color: Colors.grey[400]),
-                            filled: _discountApplied,
-                            fillColor: _discountApplied ? Colors.grey[200] : null,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(10),
+                        child: Stack(
+                          alignment: Alignment.centerRight,
+                          children: [
+                            TextField(
+                              controller: _discountCodeController,
+                              enabled: !_discountApplied, // 🔥 İndirim uygulandıysa YAZMA ENGELLE!
+                              readOnly: _discountApplied, // 🔥 Uygulandıysa sadece oku
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: _discountApplied ? Colors.grey : Colors.black,
+                              ),
+                              decoration: InputDecoration(
+                                hintText: 'İndirim kodu',
+                                hintStyle: TextStyle(fontSize: 12, color: Colors.grey[400]),
+                                filled: _discountApplied,
+                                fillColor: _discountApplied ? Colors.grey[200] : null,
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                prefixIcon: Icon(
+                                  Icons.confirmation_number,
+                                  size: 18,
+                                  color: _discountApplied ? Colors.grey : Colors.green,
+                                ),
+                                // ✅ suffixIcon kaldırıldı - Stack ile dışarıda eklendi
+                              ),
+                              textCapitalization: TextCapitalization.characters,
+                              onChanged: (value) {
+                                setState(() {}); // X ikonunu göstermek için
+                              },
                             ),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            prefixIcon: Icon(
-                              Icons.confirmation_number,
-                              size: 18,
-                              color: _discountApplied ? Colors.grey : Colors.green,
-                            ),
-                            suffixIcon: _discountCodeController.text.isNotEmpty
-                                ? IconButton(
-                                    icon: const Icon(Icons.clear, size: 20, color: Colors.red),
-                                    onPressed: () {
-                                      setState(() {
-                                        _discountCodeController.clear();
-                                        _discountAmount = 0.0;
-                                        _discountApplied = false;
-                                      });
-                                      ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('🗑️ İndirim kodu kaldırıldı'),
-                                          backgroundColor: Colors.orange,
-                                          duration: Duration(seconds: 1),
-                                        ),
-                                      );
-                                    },
-                                  )
-                                : null,
-                          ),
-                          textCapitalization: TextCapitalization.characters,
-                          onChanged: (value) {
-                            setState(() {}); // X ikonunu göstermek için
-                          },
+                            // ✅ X BUTONU - TextField dışında Stack ile (her zaman tıklanabilir!)
+                            if (_discountCodeController.text.isNotEmpty)
+                              Positioned(
+                                right: 4,
+                                child: IconButton(
+                                  icon: const Icon(Icons.clear, size: 20, color: Colors.red),
+                                  onPressed: () {
+                                    setState(() {
+                                      _discountCodeController.clear();
+                                      _discountAmount = 0.0;
+                                      _discountApplied = false;
+                                    });
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('🗑️ İndirim kodu kaldırıldı'),
+                                        backgroundColor: Colors.orange,
+                                        duration: Duration(seconds: 1),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                          ],
                         ),
                       ),
                       const SizedBox(width: 6),
@@ -793,6 +820,10 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
     try {
       print('📡 API çağrısı başlıyor: validate_discount.php');
       
+      // Müşteri ID'yi al
+      final prefs = await SharedPreferences.getInstance();
+      final customerId = prefs.getString('user_id') ?? '0';
+      
       // Backend'den indirim kodu doğrula
       final response = await http.post(
         Uri.parse('https://admin.funbreakvale.com/api/validate_discount.php'),
@@ -800,6 +831,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
         body: jsonEncode({
           'code': code,
           'total_amount': _totalPrice,
+          'customer_id': int.tryParse(customerId) ?? 0, // ✅ Kişi başı limit kontrolü için
         }),
       ).timeout(const Duration(seconds: 10));
       

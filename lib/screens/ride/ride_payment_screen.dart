@@ -55,6 +55,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
   
   // SAATLİK PAKET BİLGİSİ
   String _hourlyPackageLabel = '';
+  List<Map<String, dynamic>> _cachedHourlyPackages = []; // Panel'den çekilen saatlik paketler
   
   // ÖZEL KONUM BİLGİSİ
   Map<String, dynamic>? _specialLocation;
@@ -143,7 +144,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
     try {
       // Panel'den fiyatlandırma ayarlarını çek
       final response = await http.get(
-        Uri.parse('https://admin.funbreakvale.com/api/get_pricing_settings.php'),
+        Uri.parse('https://admin.funbreakvale.com/api/get_pricing_info.php'),
       ).timeout(const Duration(seconds: 10));
       
       if (response.statusCode == 200) {
@@ -159,14 +160,110 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
           
           print('✅ MÜŞTERİ ÖDEME: Panel ayarları çekildi - İlk $_waitingFreeMinutes dk ücretsiz, sonra her $_waitingIntervalMinutes dk ₺$_waitingFeePerInterval');
         }
+        
+        // Saatlik paketleri de çek (varsa)
+        if (data['hourly_packages'] != null) {
+          final packages = data['hourly_packages'] as List;
+          _cachedHourlyPackages = packages.map((pkg) => {
+            'start': double.tryParse(pkg['start_hour']?.toString() ?? pkg['min_value']?.toString() ?? '0') ?? 0.0,
+            'end': double.tryParse(pkg['end_hour']?.toString() ?? pkg['max_value']?.toString() ?? '0') ?? 0.0,
+            'price': double.tryParse(pkg['price']?.toString() ?? '0') ?? 0.0,
+          }).toList();
+          print('📦 MÜŞTERİ ÖDEME: ${_cachedHourlyPackages.length} saatlik paket yüklendi');
+        }
       }
     } catch (e) {
       print('⚠️ MÜŞTERİ ÖDEME: Panel ayar çekme hatası, varsayılan kullanılıyor: $e');
       // Varsayılan değerler zaten set edildi
     }
     
+    // Saatlik paketler yüklenmediyse ayrı çek
+    if (_cachedHourlyPackages.isEmpty) {
+      await _loadHourlyPackages();
+    }
+    
     // Hesaplamayı yap
     _calculateTripDetails();
+  }
+  
+  // SAATLİK PAKETLERİ PANEL'DEN ÇEK
+  Future<void> _loadHourlyPackages() async {
+    try {
+      final response = await http.get(
+        Uri.parse('https://admin.funbreakvale.com/api/get_hourly_packages.php'),
+      ).timeout(const Duration(seconds: 5));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true && data['packages'] != null) {
+          final packages = data['packages'] as List;
+          _cachedHourlyPackages = packages.map((pkg) => {
+            'start': double.tryParse(pkg['start_hour']?.toString() ?? '0') ?? 0.0,
+            'end': double.tryParse(pkg['end_hour']?.toString() ?? '0') ?? 0.0,
+            'price': double.tryParse(pkg['price']?.toString() ?? '0') ?? 0.0,
+          }).toList();
+          print('📦 MÜŞTERİ ÖDEME: ${_cachedHourlyPackages.length} saatlik paket yüklendi (ayrı API)');
+        }
+      }
+    } catch (e) {
+      print('⚠️ MÜŞTERİ ÖDEME: Saatlik paket yükleme hatası: $e');
+    }
+  }
+  
+  // KULLANILAN SÜREYE GÖRE SAATLİK PAKET FİYATI BUL
+  double _getHourlyPackagePriceByDuration(double usedHours) {
+    // Varsayılan paketler (cache boşsa)
+    if (_cachedHourlyPackages.isEmpty) {
+      if (usedHours <= 4) return 3000;
+      if (usedHours <= 8) return 4500;
+      if (usedHours <= 12) return 6000;
+      if (usedHours <= 20) return 18000;
+      return 26000;
+    }
+    
+    // Cache'den kullanılan süreye göre paket bul
+    for (final pkg in _cachedHourlyPackages) {
+      final start = pkg['start'] as double;
+      final end = pkg['end'] as double;
+      final price = pkg['price'] as double;
+      
+      if (usedHours > start && usedHours <= end) {
+        return price;
+      }
+    }
+    
+    // Hiçbiri uymazsa en yüksek paketi döndür
+    if (_cachedHourlyPackages.isNotEmpty) {
+      double maxPrice = 0;
+      for (final pkg in _cachedHourlyPackages) {
+        final price = pkg['price'] as double;
+        if (price > maxPrice) maxPrice = price;
+      }
+      return maxPrice;
+    }
+    
+    return 26000; // Fallback
+  }
+  
+  // FİYATA GÖRE PAKET ETİKETİ BUL
+  String _getHourlyPackageLabelByPrice(double price) {
+    if (price == 3000) return '0-4 Saat Paketi';
+    if (price == 4500) return '4-8 Saat Paketi';
+    if (price == 6000) return '8-12 Saat Paketi';
+    if (price == 18000) return '12-20 Saat Paketi';
+    if (price == 26000) return '20-50 Saat Paketi';
+    
+    // Cache'den eşleşen paketi bul
+    for (final pkg in _cachedHourlyPackages) {
+      final pkgPrice = pkg['price'] as double;
+      if (pkgPrice == price) {
+        final start = (pkg['start'] as double).toInt();
+        final end = (pkg['end'] as double).toInt();
+        return '$start-$end Saat Paketi';
+      }
+    }
+    
+    return 'Saatlik Paket';
   }
   
   void _calculateTripDetails() {
@@ -205,42 +302,81 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
     final serviceType = widget.rideStatus['service_type'] ?? widget.rideDetails['service_type'] ?? 'vale';
     final isHourlyPackage = (serviceType == 'hourly');
     
-    // SAATLİK PAKET BİLGİSİNİ BELİRLE
+    // SAATLİK PAKET BİLGİSİNİ BELİRLE - final_price ÖNCELİKLİ!
     if (isHourlyPackage) {
-      final rideDurationHours = widget.rideStatus['ride_duration_hours'];
-      if (rideDurationHours != null) {
-        final hours = double.tryParse(rideDurationHours.toString()) ?? 0.0;
-        final estimatedPrice = double.tryParse(widget.rideDetails['estimated_price']?.toString() ?? '0') ?? 0.0;
-        
-        // Fiyata göre paket belirle
-        if (estimatedPrice == 3000) {
-          _hourlyPackageLabel = '0-4 Saat Paketi';
-        } else if (estimatedPrice == 4500) {
-          _hourlyPackageLabel = '4-8 Saat Paketi';
-        } else if (estimatedPrice == 6000) {
-          _hourlyPackageLabel = '8-12 Saat Paketi';
-        } else if (estimatedPrice == 18000) {
-          _hourlyPackageLabel = '12-20 Saat Paketi';
-        } else if (estimatedPrice == 26000) {
-          _hourlyPackageLabel = '20-50 Saat Paketi';
-        } else {
-          _hourlyPackageLabel = 'Saatlik Paket (${hours.toStringAsFixed(1)} saat)';
-        }
+      // ✅ KRİTİK: final_price varsa KULLANILAN SÜREYE GÖRE PAKETİ BELİRLE!
+      final finalPrice = widget.rideStatus['final_price'];
+      final priceToCheck = (finalPrice != null && finalPrice > 0) 
+          ? double.tryParse(finalPrice.toString()) ?? estimatedPrice
+          : estimatedPrice;
+      
+      // Fiyata göre paket belirle - KULLANILAN SÜREYE GÖRE!
+      if (priceToCheck == 3000) {
+        _hourlyPackageLabel = '0-4 Saat Paketi';
+      } else if (priceToCheck == 4500) {
+        _hourlyPackageLabel = '4-8 Saat Paketi';
+      } else if (priceToCheck == 6000) {
+        _hourlyPackageLabel = '8-12 Saat Paketi';
+      } else if (priceToCheck == 18000) {
+        _hourlyPackageLabel = '12-20 Saat Paketi';
+      } else if (priceToCheck == 26000) {
+        _hourlyPackageLabel = '20-50 Saat Paketi';
       } else {
-        _hourlyPackageLabel = 'Saatlik Paket';
+        final rideDurationHours = widget.rideStatus['ride_duration_hours'];
+        if (rideDurationHours != null) {
+          final hours = double.tryParse(rideDurationHours.toString()) ?? 0.0;
+          _hourlyPackageLabel = 'Saatlik Paket (${hours.toStringAsFixed(1)} saat)';
+        } else {
+          _hourlyPackageLabel = 'Saatlik Paket';
+        }
       }
+      
+      print('📦 PAKET ETİKETİ: $_hourlyPackageLabel (final_price: $finalPrice, estimated: $estimatedPrice)');
     }
     
     // ✅ FİYAT HESAPLAMA - SAATLİK PAKET vs NORMAL YOLCULUK
+    // 🔥 DEBUG: Gelen tüm fiyat değerlerini logla!
+    print('🔍 ÖDEME DEBUG ===========================');
+    print('   rideStatus[final_price]: ${widget.rideStatus['final_price']}');
+    print('   rideStatus[estimated_price]: ${widget.rideStatus['estimated_price']}');
+    print('   rideStatus[distance_price]: ${widget.rideStatus['distance_price']}');
+    print('   rideDetails[estimated_price]: ${widget.rideDetails['estimated_price']}');
+    print('   rideStatus[location_extra_fee]: ${widget.rideStatus['location_extra_fee']}');
+    print('   _locationExtraFee: $_locationExtraFee');
+    print('========================================');
+    
     if (isHourlyPackage) {
-      // SAATLİK PAKET - Sabit fiyat, bekleme yok, KM yok
-      _basePrice = estimatedPrice;
+      // ✅ KRİTİK FIX: SAATLİK PAKETTE KULLANILAN SÜREYE göre fiyat hesapla!
+      final finalPrice = widget.rideStatus['final_price'];
+      
+      if (finalPrice != null && finalPrice > 0) {
+        // Backend hesapladı - KULLANILAN SÜREYE göre paket fiyatı!
+        _totalPrice = double.tryParse(finalPrice.toString()) ?? estimatedPrice;
+        print('📦 MÜŞTERİ ÖDEME: SAATLİK PAKET - Backend final_price: ₺${_totalPrice.toStringAsFixed(2)} (Seçilen: ₺${estimatedPrice.toStringAsFixed(2)})');
+      } else {
+        // ✅ Backend henüz hesaplamamış - KULLANILAN SÜREYE GÖRE LOCAL HESAPLA!
+        final rideDurationHours = widget.rideStatus['ride_duration_hours'] ?? 
+                                  widget.rideDetails['ride_duration_hours'];
+        
+        if (rideDurationHours != null) {
+          final usedHours = double.tryParse(rideDurationHours.toString()) ?? 0.0;
+          _totalPrice = _getHourlyPackagePriceByDuration(usedHours);
+          print('📦 MÜŞTERİ ÖDEME: SAATLİK PAKET - Kullanılan süre: ${usedHours.toStringAsFixed(1)} saat → ₺${_totalPrice.toStringAsFixed(0)} (Seçilen: ₺${estimatedPrice.toStringAsFixed(0)})');
+          
+          // Paket etiketini güncelle
+          _hourlyPackageLabel = _getHourlyPackageLabelByPrice(_totalPrice);
+        } else {
+          // Süre bilgisi de yoksa seçilen paketi kullan (geçici)
+          _totalPrice = estimatedPrice;
+          print('📦 MÜŞTERİ ÖDEME: SAATLİK PAKET - Süre bilgisi yok, seçilen fiyat: ₺${_totalPrice.toStringAsFixed(2)}');
+        }
+      }
+      
+      _basePrice = _totalPrice;
       _waitingFee = 0.0;
-      _totalPrice = estimatedPrice;
-      print('📦 MÜŞTERİ ÖDEME: SAATLİK PAKET - Sabit fiyat: ₺${_totalPrice.toStringAsFixed(2)}');
     } else {
-      // ✅ NORMAL YOLCULUK - Backend'den gelen estimated_price kullan (zaten bekleme dahil!)
-      // ⚠️ Backend'den gelen estimated_price ZATEN bekleme dahil!
+      // ✅ NORMAL YOLCULUK - final_price ÖNCELİKLİ!
+      // 🔥 KRİTİK FIX: final_price HER ZAMAN ÖNCELİKLİ OLMALI!
       final finalPrice = widget.rideStatus['final_price'];
       final backendEstimatedPrice = widget.rideStatus['estimated_price'] ?? 
                                      widget.rideDetails['estimated_price'] ?? 
@@ -251,16 +387,39 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                                 widget.rideStatus['distance_only_price'] ?? 
                                 widget.rideDetails['base_price_only'];
       
-      // final_price varsa onu kullan (tamamlanmış yolculuk)
-      if (finalPrice != null && finalPrice > 0) {
-        _totalPrice = double.tryParse(finalPrice.toString()) ?? 0.0;
+      // 🔥 KRİTİK: final_price HER ZAMAN ÖNCELİKLİ! (GÜNCEL TUTAR)
+      // Tahmini fiyatı DEĞİL, güncel hesaplanmış fiyatı kullan!
+      if (finalPrice != null) {
+        final parsedFinalPrice = double.tryParse(finalPrice.toString()) ?? 0.0;
+        if (parsedFinalPrice > 0) {
+          _totalPrice = parsedFinalPrice;
+          print('💳 ÖDEME: final_price KULLANILIYOR: ₺${_totalPrice.toStringAsFixed(0)} (estimated_price: ₺$backendEstimatedPrice - KULLANILMIYOR!)');
+        } else {
+          // final_price 0 ise estimated_price kullan
+          _totalPrice = double.tryParse(backendEstimatedPrice.toString()) ?? 0.0;
+          print('💳 ÖDEME: final_price=0, estimated_price kullanılıyor: ₺${_totalPrice.toStringAsFixed(0)}');
+        }
       } else {
-        // Backend'den gelen estimated_price kullan
+        // final_price null ise estimated_price kullan
         _totalPrice = double.tryParse(backendEstimatedPrice.toString()) ?? 0.0;
+        print('💳 ÖDEME: final_price NULL, estimated_price kullanılıyor: ₺${_totalPrice.toStringAsFixed(0)}');
       }
       
-      // MESAFE VE BEKLEME AYRI HESAPLA
-      if (backendBasePrice != null && backendBasePrice > 0) {
+      // ✅ MESAFE VE BEKLEME BACKEND'DEN AYRI GELİYOR!
+      // Backend'den distance_price veya base_price al
+      final backendDistancePrice = widget.rideStatus['distance_price'] ?? 
+                                    widget.rideStatus['base_price'] ?? 
+                                    backendBasePrice;
+      // Backend'den waiting_fee al
+      final backendWaitingFee = widget.rideStatus['waiting_fee'] ?? 
+                                 widget.rideDetails['waiting_fee'];
+      
+      if (backendDistancePrice != null && backendDistancePrice > 0) {
+        // ✅ Backend ayrıştırılmış fiyat gönderdi
+        _basePrice = double.tryParse(backendDistancePrice.toString()) ?? 0.0;
+        _waitingFee = double.tryParse(backendWaitingFee?.toString() ?? '0') ?? 0.0;
+        print('💳 ÖDEME: Backend ayrıştırılmış fiyat - Mesafe: ₺${_basePrice.toStringAsFixed(0)}, Bekleme: ₺${_waitingFee.toStringAsFixed(0)}, Özel Konum: ₺${_locationExtraFee.toStringAsFixed(0)}, Toplam: ₺${_totalPrice.toStringAsFixed(0)}');
+      } else if (backendBasePrice != null && backendBasePrice > 0) {
         // Backend base_price_only gönderiyor (mesafe ücreti)
         _basePrice = double.tryParse(backendBasePrice.toString()) ?? 0.0;
         // Bekleme = Toplam - Mesafe - Özel Konum Ücreti
@@ -377,26 +536,38 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text(
+                  Text(
                     '💳 Ödeme Detayları',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      fontSize: 13, 
+                      fontWeight: FontWeight.bold,
+                      color: themeProvider.isDarkMode ? Colors.white : Colors.black87, // ✅ Beyaz renk
+                    ),
                   ),
                   const SizedBox(height: 8),
                   
-                  _buildPaymentRow('🚗 Yolculuk Ücreti', '₺${_basePrice.toStringAsFixed(2)}'),
-                  if (_waitingMinutes > _waitingFreeMinutes && _hourlyPackageLabel.isEmpty)
-                    _buildPaymentRow('⏰ Bekleme Ücreti', '₺${_waitingFee.toStringAsFixed(2)} ($_waitingMinutes dk)', subtitle: 'İlk $_waitingFreeMinutes dk ücretsiz, sonrası her $_waitingIntervalMinutes dk ₺${_waitingFeePerInterval.toStringAsFixed(0)}'),
-                  if (_waitingMinutes <= _waitingFreeMinutes && _waitingMinutes > 0 && _hourlyPackageLabel.isEmpty)
-                    _buildPaymentRow('⏰ Bekleme (Ücretsiz)', '$_waitingMinutes dakika', isFree: true),
-                  // ✅ ÖZEL KONUM ÜCRETİ GÖSTERİMİ (Komisyonsuz!)
+                  // ✅ SAATLİK PAKET İSE FARKLI GÖSTER
+                  if (_hourlyPackageLabel.isNotEmpty) ...[
+                    _buildPaymentRow('📦 $_hourlyPackageLabel', '₺${_basePrice.toStringAsFixed(0)}', subtitle: 'Saatlik pakette bekleme ücreti alınmaz'),
+                  ] else ...[
+                    // ✅ MESAFE ÜCRETİ (KM bilgisi ile)
+                    _buildPaymentRow('📏 Mesafe Ücreti', '₺${_basePrice.toStringAsFixed(0)}', subtitle: '${_distance.toStringAsFixed(1)} km'),
+                    
+                    // ✅ BEKLEME ÜCRETİ - SADECE BEKLEME VARSA GÖSTER!
+                    if (_waitingMinutes > _waitingFreeMinutes)
+                      _buildPaymentRow('⏰ Bekleme Ücreti', '₺${_waitingFee.toStringAsFixed(0)}', subtitle: '$_waitingMinutes dakika (ilk $_waitingFreeMinutes dk ücretsiz)')
+                    else if (_waitingMinutes > 0)
+                      _buildPaymentRow('⏰ Bekleme', 'Ücretsiz', subtitle: '$_waitingMinutes dakika (ilk $_waitingFreeMinutes dk ücretsiz)', isFree: true),
+                    // ✅ Bekleme yapılmadıysa (_waitingMinutes == 0) HİÇ GÖSTERİLMEYECEK!
+                  ],
+                  
+                  // ✅ ÖZEL KONUM ÜCRETİ GÖSTERİMİ (varsa)
                   if (_locationExtraFee > 0)
                     _buildPaymentRow(
                       '🗺️ Özel Konum Ücreti', 
-                      '+₺${_locationExtraFee.toStringAsFixed(2)}',
+                      '+₺${_locationExtraFee.toStringAsFixed(0)}',
                       subtitle: _specialLocation != null ? _specialLocation!['name'] ?? 'Özel Bölge' : 'Özel Bölge',
                     ),
-                  if (_hourlyPackageLabel.isNotEmpty)
-                    _buildPaymentRow('📦 $_hourlyPackageLabel', 'Paket fiyatına dahil', subtitle: 'Saatlik pakette bekleme ücreti alınmaz'),
                   if (_discountApplied && _discountAmount > 0)
                     _buildPaymentRow('🎁 İndirim', '-₺${_discountAmount.toStringAsFixed(2)}', subtitle: 'Kod: ${_discountCodeController.text}'),
                   const Divider(thickness: 2),
@@ -566,7 +737,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                               readOnly: _discountApplied, // 🔥 Uygulandıysa sadece oku
                               style: TextStyle(
                                 fontSize: 13,
-                                color: _discountApplied ? Colors.grey : Colors.black,
+                                color: _discountApplied ? Colors.grey : Colors.white,
                               ),
                               decoration: InputDecoration(
                                 hintText: 'İndirim kodu',
@@ -690,7 +861,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                   backgroundColor: _paymentCompleted 
                     ? Colors.green[600] 
                     : const Color(0xFFFFD700),
-                  foregroundColor: Colors.white,
+                  foregroundColor: Colors.black, // ✅ Sarı içi siyah yazı
                   padding: const EdgeInsets.symmetric(vertical: 20),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
@@ -698,26 +869,26 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                   elevation: 5,
                 ),
                 child: _isProcessingPayment 
-                  ? const Row(
+                  ? Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                          child: CircularProgressIndicator(color: Colors.black, strokeWidth: 2),
                         ),
                         SizedBox(width: 12),
-                        Text('💳 Ödeme işleniyor...'),
+                        Text('💳 Ödeme işleniyor...', style: TextStyle(color: Colors.black)),
                       ],
                     )
                   : _paymentCompleted
                     ? const Text(
                         '✅ ÖDEME TAMAMLANDI',
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
                       )
                     : Text(
                         '💳 ₺${(_totalPrice - _discountAmount).toStringAsFixed(2)} ÖDE',
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black),
                       ),
               ),
             ),
@@ -756,6 +927,9 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
   }
   
   Widget _buildPaymentRow(String label, String value, {bool isTotal = false, bool isFree = false, String? subtitle}) {
+    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+    final textColor = themeProvider.isDarkMode ? Colors.white : Colors.black87;
+    
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Column(
@@ -769,7 +943,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                 style: TextStyle(
                   fontSize: isTotal ? 16 : 14,
                   fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
-                  color: isTotal ? const Color(0xFFFFD700) : Colors.black87,
+                  color: isTotal ? const Color(0xFFFFD700) : textColor, // ✅ Beyaz renk
                 ),
               ),
               Text(
@@ -780,8 +954,8 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                   color: isTotal 
                     ? const Color(0xFFFFD700)
                     : isFree 
-                      ? Colors.green[600]
-                      : Colors.black87,
+                      ? Colors.green[400] // ✅ Daha açık yeşil
+                      : textColor, // ✅ Beyaz renk
                 ),
               ),
             ],
@@ -790,7 +964,7 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
             const SizedBox(height: 4),
             Text(
               subtitle,
-              style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+              style: TextStyle(fontSize: 11, color: themeProvider.isDarkMode ? Colors.grey[400] : Colors.grey[600]), // ✅ Daha açık gri
             ),
           ],
         ],
@@ -1675,23 +1849,84 @@ class _RidePaymentScreenState extends State<RidePaymentScreen> with SingleTicker
                   );
                 }).toList(),
               
-              const Divider(height: 1),
-              
-              // Yeni kart ekle
-              ListTile(
-                leading: const Icon(Icons.add_card, color: Color(0xFFFFD700)),
-                title: const Text('Yeni Kart Ekle', style: TextStyle(color: Colors.black)),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  // Yeni kart ekle seçildiğinde, savedCardId null olarak CardPaymentScreen açılacak
-                  // Bu sayede kart numarası giriş ekranı gösterilecek
-                  if (mounted) {
-                    setState(() {
-                      _selectedPaymentMethod = 'card';
-                      _selectedCardId = null; // Yeni kart = savedCardId yok
-                    });
-                  }
-                },
+              // Yeni kart ekle - KAYITLI KARTLAR GİBİ GÖRÜNÜM!
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.grey[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: const Color(0xFFFFD700),
+                    width: 1.5,
+                    style: BorderStyle.solid,
+                  ),
+                ),
+                child: InkWell(
+                  onTap: () async {
+                    Navigator.pop(sheetContext);
+                    // ✅ DİREKT MODERN KART EKLEME EKRANINA GİT!
+                    final prefs = await SharedPreferences.getInstance();
+                    final customerId = prefs.getString('user_id') ?? '0';
+                    
+                    final result = await Navigator.push<bool>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => CardPaymentScreen(
+                          rideId: 0, // Sadece kart kaydetme modu
+                          customerId: int.tryParse(customerId) ?? 0,
+                          amount: 0.01, // Minimum doğrulama tutarı
+                          paymentType: 'card_save', // Sadece kart kaydetme
+                          savedCardId: null,
+                        ),
+                      ),
+                    );
+                    // Kart eklendiyse listeyi yenile
+                    if (result == true) {
+                      _loadSavedCards();
+                    }
+                  },
+                  child: Row(
+                    children: [
+                      // + İkonu
+                      Container(
+                        width: 40,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFD700),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Icon(Icons.add, color: Colors.white, size: 20),
+                      ),
+                      const SizedBox(width: 12),
+                      // Metin
+                      const Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Yeni Kart Ekle',
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.black87,
+                              ),
+                            ),
+                            SizedBox(height: 4),
+                            Text(
+                              '3D Secure ile güvenli kart kaydı',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right, color: Color(0xFFFFD700)),
+                    ],
+                  ),
+                ),
               ),
               
               const SizedBox(height: 20),

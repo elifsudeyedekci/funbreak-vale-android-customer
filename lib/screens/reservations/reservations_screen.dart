@@ -1497,7 +1497,9 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
                     [
                       'Nereden: ${ride['pickup_address'] ?? 'Belirtilmemiş'}',
                       ..._parseWaypoints(ride['waypoints']),
-                      'Nereye: ${ride['destination_address'] ?? 'Belirtilmemiş'}',
+                      'Nereye (Seçilen): ${ride['destination_address'] ?? 'Belirtilmemiş'}',
+                      // ✅ GERÇEK BIRAKIŞ KONUMU - Sürücünün bıraktığı yer
+                      '📍 Gerçek Bırakış: ${_getActualDropoffText(ride)}',
                       'Mesafe: ${distance > 0 ? '${distance.toStringAsFixed(1)} km' : 'Bilinmiyor'}',
                     ],
                   ),
@@ -1597,15 +1599,30 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
   }
   
   Widget _buildPriceBreakdown(Map<String, dynamic> ride, double estimatedPrice, double actualPrice, int waitingTime) {
-    final waitingFee = waitingTime > 15 ? (waitingTime - 15) * 10.0 : 0.0;
+    // ✅ Backend'den bekleme ücreti al (varsa), yoksa hesapla
+    final backendWaitingFee = double.tryParse(ride['waiting_fee']?.toString() ?? '0') ?? 0.0;
+    final waitingFee = backendWaitingFee > 0 
+        ? backendWaitingFee 
+        : (waitingTime > 15 ? ((waitingTime - 15) / 15).ceil() * 200.0 : 0.0);
     
-    // ✅ Özel konum ücreti - Backend 'location_extra_fee' gönderiyor
+    // ✅ YENİ: Alış ve Bırakış Özel Konum Ücretleri AYRI AYRI
+    final pickupLocationFee = double.tryParse(ride['pickup_location_fee']?.toString() ?? '0') ?? 0.0;
+    final dropoffLocationFee = double.tryParse(ride['dropoff_location_fee']?.toString() ?? '0') ?? 0.0;
+    final pickupLocationName = ride['pickup_location_name']?.toString() ?? '';
+    final dropoffLocationName = ride['dropoff_location_name']?.toString() ?? '';
+    
+    // Toplam özel konum ücreti (fallback için)
     final locationExtraFee = (double.tryParse(ride['location_extra_fee']?.toString() ?? '0') ?? 0.0) > 0
         ? double.tryParse(ride['location_extra_fee'].toString()) ?? 0.0
         : double.tryParse(ride['special_location']?['fee']?.toString() ?? '0') ?? 0.0;
     
-    // Temel ücret = Toplam - Bekleme - Özel Konum
-    final baseFare = actualPrice - waitingFee - locationExtraFee;
+    // ✅ Backend'den mesafe ücreti al (varsa), yoksa hesapla
+    final backendDistancePrice = double.tryParse(ride['distance_price']?.toString() ?? 
+                                                   ride['base_price']?.toString() ?? '0') ?? 0.0;
+    // Temel ücret = Backend'den gelen veya (Toplam - Bekleme - Özel Konum)
+    final baseFare = backendDistancePrice > 0 
+        ? backendDistancePrice 
+        : actualPrice - waitingFee - locationExtraFee;
     
     // 🎁 İndirim bilgilerini al
     final discountCode = ride['discount_code']?.toString() ?? '';
@@ -1642,19 +1659,32 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
           ),
           const SizedBox(height: 12),
           
-          // Temel Ücret
-          _buildPriceRow('Temel Ücret', baseFare),
+          // Mesafe Ücreti
+          _buildPriceRow('Mesafe Ücreti', baseFare),
           
           // Bekleme Ücreti (varsa)
           if (waitingFee > 0)
             _buildPriceRow('Bekleme Ücreti (${waitingTime - 15} dk)', waitingFee),
           
-          // ✅ Özel konum ücreti (varsa) - Backend 'location_extra_fee' gönderiyor
-          if ((ride['location_extra_fee'] != null && double.tryParse(ride['location_extra_fee'].toString()) != null && double.parse(ride['location_extra_fee'].toString()) > 0) ||
-              (ride['special_location_fee'] != null && double.tryParse(ride['special_location_fee'].toString()) != null && double.parse(ride['special_location_fee'].toString()) > 0))
+          // ✅ ALIŞ Özel Konum Ücreti (varsa)
+          if (pickupLocationFee > 0)
+            _buildPriceRow(
+              '🗺️ Alış Özel Konum${pickupLocationName.isNotEmpty ? " ($pickupLocationName)" : ""}', 
+              pickupLocationFee
+            ),
+          
+          // ✅ BIRAKIŞ Özel Konum Ücreti (varsa)
+          if (dropoffLocationFee > 0)
+            _buildPriceRow(
+              '🗺️ Bırakış Özel Konum${dropoffLocationName.isNotEmpty ? " ($dropoffLocationName)" : ""}', 
+              dropoffLocationFee
+            ),
+          
+          // ✅ Fallback: Eski sistemle uyumluluk - toplam özel konum (ayrı yoksa)
+          if (pickupLocationFee == 0 && dropoffLocationFee == 0 && locationExtraFee > 0)
             _buildPriceRow(
               '🗺️ Özel Konum Ücreti', 
-              double.parse((ride['location_extra_fee'] ?? ride['special_location_fee'] ?? '0').toString())
+              locationExtraFee
             ),
           
           // 🎁 İndirim (varsa)
@@ -1833,6 +1863,23 @@ class _ReservationsScreenState extends State<ReservationsScreen> {
     } catch (e) {
       print('⚠️ Waypoints parse hatası (geçmiş yolculuklar): $e');
       return [];
+    }
+  }
+
+  // ✅ GERÇEK BIRAKIŞ KONUMU METNİ
+  String _getActualDropoffText(Map<String, dynamic> ride) {
+    final dropoffLocationName = ride['dropoff_location_name']?.toString() ?? '';
+    final dropoffLocationFee = double.tryParse(ride['dropoff_location_fee']?.toString() ?? '0') ?? 0.0;
+    
+    if (dropoffLocationName.isNotEmpty) {
+      // Sürücü özel konumda bıraktı
+      return '$dropoffLocationName (Özel Konum)';
+    } else if (dropoffLocationFee > 0) {
+      // Özel konum ücreti var ama isim yok
+      return 'Özel Konum Bölgesi';
+    } else {
+      // Normal bırakış - seçilen hedef ile aynı
+      return 'Seçilen hedef ile aynı';
     }
   }
 

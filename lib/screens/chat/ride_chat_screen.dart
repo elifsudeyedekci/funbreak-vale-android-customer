@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // 🔥 SERVICES IMPORT!
 import 'package:image_picker/image_picker.dart';
 import 'package:flutter_sound/flutter_sound.dart';
+import 'package:audio_session/audio_session.dart'; // ✅ HOPARLÖR AYARI İÇİN!
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -53,11 +54,34 @@ class _RideChatScreenState extends State<RideChatScreen> {
   }
   
   Future<void> _initializeAudio() async {
+    // ✅ Audio Session - Sesi NORMAL HOPARLÖRDEN çıkart (üst hoparlör değil!)
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(AudioSessionConfiguration(
+        avAudioSessionCategory: AVAudioSessionCategory.playAndRecord, // ✅ Kayıt + Çalma
+        avAudioSessionCategoryOptions: AVAudioSessionCategoryOptions.defaultToSpeaker | 
+                                        AVAudioSessionCategoryOptions.allowBluetooth, // ✅ HOPARLÖR + Bluetooth
+        avAudioSessionMode: AVAudioSessionMode.spokenAudio, // ✅ Konuşma için optimize
+        androidAudioAttributes: const AndroidAudioAttributes(
+          contentType: AndroidAudioContentType.speech, // ✅ Konuşma içeriği
+          usage: AndroidAudioUsage.media, // ✅ Medya çıkışı (hoparlör)
+        ),
+        androidAudioFocusGainType: AndroidAudioFocusGainType.gain,
+      ));
+      await session.setActive(true); // ✅ Session'ı aktive et
+      print('✅ Audio session HOPARLÖR moduna ayarlandı (playAndRecord + defaultToSpeaker)');
+    } catch (e) {
+      print('⚠️ Audio session ayarlanamadı: $e');
+    }
+    
     _audioRecorder = FlutterSoundRecorder();
     _audioPlayer = FlutterSoundPlayer();
     
     await _audioRecorder!.openRecorder();
     await _audioPlayer!.openPlayer();
+    
+    // ✅ Player'ı hoparlöre zorla
+    await _audioPlayer!.setVolume(1.0);
     
     // Ses kayıt sistemi başlatıldı
   }
@@ -83,7 +107,18 @@ class _RideChatScreenState extends State<RideChatScreen> {
             _messages.clear();
             for (var apiMessage in apiMessages) {
               final messageType = apiMessage['message_type'] ?? 'text';
-              final messageContent = apiMessage['message_content'] ?? apiMessage['file_path'] ?? '';
+              // 🔥 FIX: image ve audio için file_path ÖNCELİKLİ olmalı!
+              // message_content boş string olabiliyor, bu yüzden önce file_path kontrol et
+              String messageContent;
+              if (messageType == 'image' || messageType == 'audio') {
+                // Resim ve ses için file_path kullan (URL burada)
+                messageContent = apiMessage['file_path']?.toString() ?? 
+                                apiMessage['message_content']?.toString() ?? '';
+              } else {
+                // Text ve location için message_content kullan
+                messageContent = apiMessage['message_content']?.toString() ?? 
+                                apiMessage['file_path']?.toString() ?? '';
+              }
               
               // Konum mesajı için lat/lng parse et
               double? lat;
@@ -178,10 +213,12 @@ class _RideChatScreenState extends State<RideChatScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  widget.isDriver ? 'Müşteri' : widget.driverName,
+                  // ✅ FIX: Boş ise fallback göster
+                  widget.isDriver ? 'Müşteri' : (widget.driverName.isNotEmpty ? widget.driverName : 'Şoförünüz'),
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.bold,
+                    color: Colors.white,
                   ),
                 ),
                 const Text(
@@ -975,7 +1012,12 @@ class _RideChatScreenState extends State<RideChatScreen> {
       
       if (latitude == null || longitude == null) return;
       
-      final locationMessage = '📍 $locationName: https://www.google.com/maps?q=$latitude,$longitude';
+      // ✅ JSON formatında gönder - karşı taraf düzgün parse edebilsin!
+      final locationJson = json.encode({
+        'latitude': latitude,
+        'longitude': longitude,
+        'name': locationName ?? 'Konum',
+      });
       
       print('📍 Konum paylaşılıyor: $locationName ($latitude, $longitude)');
       
@@ -983,18 +1025,19 @@ class _RideChatScreenState extends State<RideChatScreen> {
       setState(() {
         _messages.add({
           'id': DateTime.now().millisecondsSinceEpoch.toString(),
-          'message': locationMessage,
+          'message': locationJson,
           'sender_type': 'customer',
           'timestamp': DateTime.now(),
           'type': 'location',
           'latitude': latitude,
           'longitude': longitude,
+          'locationName': locationName,
         });
       });
       _scrollToBottom();
       
-      // API'ye gönder
-      await _sendMessageToAPI(locationMessage, 'location');
+      // API'ye gönder - JSON formatında
+      await _sendMessageToAPI(locationJson, 'location');
       print('📍 Konum paylaşıldı!');
       
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1394,42 +1437,118 @@ class _RideChatScreenState extends State<RideChatScreen> {
       await _audioRecorder!.stopRecorder();
       
       final recordingDuration = _recordingSeconds;
-      
-      final audioFile = File(_currentRecordingPath!);
-      final fileSize = await audioFile.length();
+      final localPath = _currentRecordingPath!;
       
       setState(() {
         _isRecording = false;
-        _messages.add({
-          'id': DateTime.now().millisecondsSinceEpoch.toString(),
-          'message': _currentRecordingPath!,
-          'sender_type': 'customer',
-          'timestamp': DateTime.now(),
-          'type': 'audio',
-          'duration': recordingDuration,
-          'audioPath': _currentRecordingPath,
-          'fileSize': fileSize,
-        });
       });
-      _scrollToBottom();
       
-      await _sendAudioMessage(_currentRecordingPath!, recordingDuration);
+      // 🔥 FIX: ÖNCE UPLOAD YAP, SONRA MESAJ EKLE!
+      // Yükleniyor göster
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+              SizedBox(width: 12),
+              Text('Ses gönderiliyor...'),
+            ],
+          ),
+          duration: Duration(seconds: 10),
+        ),
+      );
       
-      // Sesli mesaj gönderildi
+      // Upload ve API gönderimi
+      final audioUrl = await _uploadAndSendAudio(localPath, recordingDuration);
+      
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      
+      if (audioUrl != null && audioUrl.isNotEmpty) {
+        // 🔥 FIX: Mesajı URL ile ekle (local path değil!)
+        setState(() {
+          _messages.add({
+            'id': DateTime.now().millisecondsSinceEpoch.toString(),
+            'message': audioUrl,
+            'sender_type': 'customer',
+            'timestamp': DateTime.now(),
+            'type': 'audio',
+            'duration': recordingDuration,
+            'audioPath': audioUrl,
+            'synced': true,
+          });
+        });
+        _scrollToBottom();
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('✅ Ses gönderildi'), backgroundColor: Colors.green, duration: Duration(seconds: 2)),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('❌ Ses gönderilemedi'), backgroundColor: Colors.red),
+        );
+      }
+      
     } catch (e) {
-      // Ses kayıt durdurma hatası: $e
+      print('❌ Ses kayıt durdurma hatası: $e');
       setState(() => _isRecording = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('❌ Ses gönderilemedi: $e'), backgroundColor: Colors.red),
+      );
     }
   }
   
-  // GERÇEK SES MESAJI GÖNDERME
-  Future<void> _sendAudioMessage(String audioPath, int duration) async {
+  // 🔥 SES DOSYASI UPLOAD VE API GÖNDERME
+  Future<String?> _uploadAndSendAudio(String filePath, int duration) async {
     try {
-      // Ses dosyası API'ye gönderiliyor
-      print('   ⏱️ Süre: ${duration}s');
-      await _sendMessageToAPI(audioPath, 'audio');
+      print('🎤 MÜŞTERİ Ses dosyası yükleniyor: $filePath');
+      
+      // Dosyayı oku
+      final File audioFile = File(filePath);
+      if (!audioFile.existsSync()) {
+        print('❌ MÜŞTERİ Ses dosyası bulunamadı: $filePath');
+        return null;
+      }
+      
+      // Base64'e çevir
+      final Uint8List audioBytes = await audioFile.readAsBytes();
+      final String base64Audio = base64Encode(audioBytes);
+      
+      print('📊 MÜŞTERİ Ses boyutu: ${audioBytes.length} bytes, Süre: ${duration}s');
+      
+      // API'ye upload et
+      final response = await http.post(
+        Uri.parse('https://admin.funbreakvale.com/api/upload_ride_audio.php'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'ride_id': int.parse(widget.rideId),
+          'audio': base64Audio,
+          'sender_type': 'customer',
+          'duration': duration,
+        }),
+      ).timeout(const Duration(seconds: 30));
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          final audioUrl = data['audio_url'];
+          print('✅ MÜŞTERİ Ses upload başarılı: $audioUrl');
+          
+          // API'ye mesaj olarak gönder
+          await _sendMessageToAPI(audioUrl, 'audio');
+          print('✅ MÜŞTERİ: Ses mesajı API\'ye gönderildi');
+          
+          return audioUrl;
+        } else {
+          print('❌ MÜŞTERİ Ses upload API hatası: ${data['message']}');
+          return null;
+        }
+      } else {
+        print('❌ MÜŞTERİ Ses upload HTTP hatası: ${response.statusCode}');
+        return null;
+      }
     } catch (e) {
-      // Ses mesajı gönderme hatası: $e
+      print('❌ MÜŞTERİ Ses upload hatası: $e');
+      return null;
     }
   }
   
@@ -1599,6 +1718,19 @@ class _RideChatScreenState extends State<RideChatScreen> {
   
   // GERÇEK SES MESAJI OYNATMA
   Future<void> _playAudioMessage(String audioPath, [String? messageId]) async {
+    // ✅ Boş path kontrolü
+    if (audioPath.isEmpty) {
+      print('❌ Ses yolu boş');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('❌ Ses dosyası bulunamadı')),
+        );
+      }
+      return;
+    }
+    
+    print('🎵 Ses çalma isteği: $audioPath');
+    
     try {
       // Aynı mesaj çalıyorsa durdur
       if (_currentlyPlayingId == messageId && messageId != null) {
@@ -1610,11 +1742,33 @@ class _RideChatScreenState extends State<RideChatScreen> {
         return;
       }
       
-      if (await File(audioPath).exists()) {
+      // ✅ FIX: URL kontrolü - HTTP veya HTTPS ile başlıyorsa direkt çal
+      final isUrl = audioPath.startsWith('http://') || audioPath.startsWith('https://');
+      
+      // URL ise direkt çal (File.exists kontrolü yapma!)
+      // Yerel dosya ise exists kontrolü yap
+      bool canPlay = false;
+      if (isUrl) {
+        canPlay = true;
+        print('🌐 URL ses dosyası tespit edildi - direkt çalınacak');
+      } else {
+        canPlay = await File(audioPath).exists();
+        print('📁 Yerel dosya kontrolü: ${canPlay ? "MEVCUT" : "YOK"}');
+      }
+      
+      if (canPlay) {
         setState(() {
           _currentlyPlayingId = messageId;
           _playbackProgress = 0.0;
         });
+        
+        // ✅ Session'ı aktive et (her çalmadan önce)
+        try {
+          final session = await AudioSession.instance;
+          await session.setActive(true);
+        } catch (e) {
+          print('⚠️ Audio session aktive edilemedi: $e');
+        }
         
         await _audioPlayer!.startPlayer(
           fromURI: audioPath,
@@ -1635,9 +1789,10 @@ class _RideChatScreenState extends State<RideChatScreen> {
           }
         });
         
-        // Ses mesajı oynatılıyor
+        print('🎵 Ses çalınıyor: $audioPath');
       } else {
         // Ses dosyası bulunamadı
+        print('❌ Ses dosyası bulunamadı veya erişilemez: $audioPath');
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('❌ Ses dosyası bulunamadı')),
@@ -1646,6 +1801,7 @@ class _RideChatScreenState extends State<RideChatScreen> {
       }
     } catch (e) {
       // Ses oynatma hatası: $e
+      print('❌ Ses oynatma hatası: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('❌ Ses oynatma hatası: $e')),

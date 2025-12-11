@@ -2,7 +2,7 @@ name: funbreak_vale_customer
 description: "FunBreak Vale Customer App"
 publish_to: 'none'
 
-version: 1.4.4+125
+version: 1.4.9+144
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -29,6 +29,7 @@ dependencies:
   google_places_flutter: ^2.0.9
   image_picker: ^1.0.4
   flutter_sound: ^9.2.13
+  audio_session: ^0.1.21
   path_provider: ^2.1.1
   sms_autofill: ^2.3.0
   webview_flutter: ^4.13.0
@@ -50,5 +51,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/app_icon.png
-    - assets/sounds/
     - assets/images/ 

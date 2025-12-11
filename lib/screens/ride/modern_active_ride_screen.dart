@@ -64,6 +64,14 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
   // ✅ SAATLİK PAKET CACHE
   List<Map<String, double>> _cachedHourlyPackages = [];
   
+  // ✅ MESAFE FİYATLANDIRMA CACHE (Panel'den çekilecek)
+  List<Map<String, dynamic>> _cachedDistancePricing = [];
+  
+  // ✅ BEKLEME AYARLARI CACHE
+  int _waitingFreeMinutes = 15;
+  int _waitingIntervalMinutes = 15;
+  double _waitingFeePerInterval = 200.0;
+  
   // 🗺️ HARİTA KAMERA KONTROLÜ
   bool _isFirstCameraUpdate = true; // İlk açılışta kamera ayarla, sonra SADECE marker güncelle
   
@@ -73,10 +81,15 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
     _initializeAnimations();
     _saveToPersistence();
     _loadHourlyPackages(); // Panel'den saatlik paketleri çek!
+    _loadDistancePricing(); // ✅ Panel'den mesafe fiyatlandırması çek!
+    _loadWaitingSettings(); // ✅ Panel'den bekleme ayarlarını çek!
+    _loadOrSaveInitialPrice(); // ✅ Tahmini fiyatı SharedPreferences'tan yükle/kaydet
     
-    // ✅ TAHMİNİ FİYAT (SABİT) - İLK ROTA SEÇERKENKİ FİYAT (BİR KEZ SET EDİLİR, DEĞİŞMEZ!)
+    // ✅ TAHMİNİ FİYAT - Önce initState'te geçici olarak widget'tan al
+    // _loadOrSaveInitialPrice() async olarak SharedPreferences'tan doğru değeri yükleyecek
     _initialEstimatedPrice = double.tryParse(
           widget.rideDetails['initial_estimated_price']?.toString() ??
+          widget.rideDetails['db_initial_estimated_price']?.toString() ??
           widget.rideDetails['estimated_price']?.toString() ??
           '0',
         ) ??
@@ -84,7 +97,7 @@ class _ModernActiveRideScreenState extends State<ModernActiveRideScreen> with Ti
     if (_initialEstimatedPrice == 0.0) {
       _initialEstimatedPrice = 1000.0; // Fallback (minimum)
     }
-    print('📌 [MÜŞTERİ] Tahmini fiyat (sabit): ₺${_initialEstimatedPrice} - Bu değişmeyecek!');
+    print('📌 [MÜŞTERİ] Tahmini fiyat (ilk): ₺${_initialEstimatedPrice}');
     
     // Başlangıçta konumları ayarla
     _customerLocation = LatLng(
@@ -383,6 +396,93 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
       }
     } catch (e) {
       print('⚠️ [MÜŞTERİ] Saatlik paket yükleme hatası: $e');
+    }
+  }
+  
+  // ✅ FİYATLANDIRMA BİLGİLERİNİ PANEL'DEN ÇEK (get_pricing_info.php TEK API!)
+  Future<void> _loadDistancePricing() async {
+    try {
+      final response = await http.get(
+        Uri.parse('https://admin.funbreakvale.com/api/get_pricing_info.php'),
+      ).timeout(const Duration(seconds: 5));
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          // ✅ MESAFE FİYATLANDIRMA (distance_pricing array)
+          if (data['distance_pricing'] != null) {
+            final pricing = data['distance_pricing'] as List;
+            
+            setState(() {
+              _cachedDistancePricing = pricing.map((p) => {
+                'min_km': double.tryParse(p['min_km']?.toString() ?? '0') ?? 0.0,
+                'max_km': double.tryParse(p['max_km']?.toString() ?? '0') ?? 0.0,
+                'price': double.tryParse(p['price']?.toString() ?? '0') ?? 0.0,
+              }).toList();
+            });
+            
+            print('✅ [MÜŞTERİ] ${_cachedDistancePricing.length} mesafe aralığı yüklendi');
+          }
+          
+          // ✅ BEKLEME AYARLARI (pricing object içinde)
+          if (data['pricing'] != null) {
+            final pricingSettings = data['pricing'];
+            
+            setState(() {
+              _waitingFreeMinutes = int.tryParse(pricingSettings['waiting_fee_free_minutes']?.toString() ?? '15') ?? 15;
+              _waitingIntervalMinutes = int.tryParse(pricingSettings['waiting_interval_minutes']?.toString() ?? '15') ?? 15;
+              _waitingFeePerInterval = double.tryParse(pricingSettings['waiting_fee_per_interval']?.toString() ?? '200') ?? 200.0;
+            });
+            
+            print('✅ [MÜŞTERİ] Bekleme ayarları: İlk $_waitingFreeMinutes dk ücretsiz, sonra $_waitingIntervalMinutes dk başına ₺$_waitingFeePerInterval');
+          }
+        }
+      }
+    } catch (e) {
+      print('⚠️ [MÜŞTERİ] Fiyatlandırma yükleme hatası: $e');
+    }
+  }
+  
+  // ✅ BEKLEME AYARLARI - _loadDistancePricing() içinde yükleniyor (geriye uyumluluk)
+  Future<void> _loadWaitingSettings() async {
+    // Bu fonksiyon artık _loadDistancePricing() içinde çağrılıyor
+    print('ℹ️ [MÜŞTERİ] Bekleme ayarları _loadDistancePricing() içinde yükleniyor');
+  }
+  
+  // ✅ TAHMİNİ FİYATI SharedPreferences'TAN YÜKLE VEYA KAYDET (SABİT KALMASI İÇİN!)
+  Future<void> _loadOrSaveInitialPrice() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final rideId = widget.rideDetails['ride_id']?.toString() ?? widget.rideDetails['id']?.toString() ?? '0';
+      final key = 'initial_price_ride_$rideId';
+      
+      // Önce SharedPreferences'ta kayıtlı fiyat var mı kontrol et
+      final savedPrice = prefs.getDouble(key);
+      
+      if (savedPrice != null && savedPrice > 0) {
+        // Kayıtlı fiyat var - bunu kullan (uygulama kapansa bile sabit!)
+        setState(() {
+          _initialEstimatedPrice = savedPrice;
+        });
+        print('📌 [MÜŞTERİ] Tahmini fiyat SharedPreferences\'tan yüklendi: ₺$savedPrice (SABİT!)');
+      } else {
+        // Kayıtlı fiyat yok - widget'tan al ve kaydet
+        final priceFromWidget = double.tryParse(
+          widget.rideDetails['initial_estimated_price']?.toString() ??
+          widget.rideDetails['db_initial_estimated_price']?.toString() ??
+          widget.rideDetails['estimated_price']?.toString() ?? '0'
+        ) ?? 0.0;
+        
+        if (priceFromWidget > 0) {
+          await prefs.setDouble(key, priceFromWidget);
+          setState(() {
+            _initialEstimatedPrice = priceFromWidget;
+          });
+          print('📌 [MÜŞTERİ] Tahmini fiyat kaydedildi: ₺$priceFromWidget (Artık sabit!)');
+        }
+      }
+    } catch (e) {
+      print('⚠️ [MÜŞTERİ] Tahmini fiyat yükleme/kaydetme hatası: $e');
     }
   }
   
@@ -1406,13 +1506,37 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                   if (mounted) {
                     WidgetsBinding.instance.addPostFrameCallback((_) {
                       if (mounted) {
-                        // GÜNCEL TUTAR VE TÜM BİLGİLERİ AL - Backend'den!
-                        final currentTotal = double.tryParse(_calculateCurrentTotal()) ?? 0.0;
+                        // ✅ KRİTİK FIX: BACKEND'DEN GELEN DEĞERLER ÖNCELİKLİ!
+                        // check_ride_status.php artık tüm fiyat detaylarını döndürüyor
+                        final backendFinalPrice = checkData['final_price'] ?? _currentRideStatus['final_price'];
+                        final backendDistancePrice = checkData['distance_price'] ?? _currentRideStatus['distance_price'];
+                        final backendWaitingFee = checkData['waiting_fee'] ?? _currentRideStatus['waiting_fee'];
+                        final backendTotalDistance = checkData['total_distance'] ?? _currentRideStatus['total_distance'];
+                        final backendWaitingMinutes = checkData['waiting_minutes'] ?? _currentRideStatus['waiting_minutes'];
+                        final backendLocationExtraFee = checkData['location_extra_fee'] ?? _currentRideStatus['location_extra_fee'];
+                        final backendServiceType = checkData['service_type'] ?? _currentRideStatus['service_type'] ?? widget.rideDetails['service_type'] ?? 'vale';
                         
-                        // GÜNCEL ride status'ı oluştur - Backend'den gelen TÜM bilgilerle!
+                        final calculatedTotal = double.tryParse(_calculateCurrentTotal()) ?? 0.0;
+                        final currentTotal = (backendFinalPrice != null && backendFinalPrice > 0) 
+                            ? double.tryParse(backendFinalPrice.toString()) ?? calculatedTotal
+                            : calculatedTotal;
+                        
+                        // GÜNCEL ride status'ı oluştur - BACKEND DEĞERLERİ ÖNCELİKLİ!
                         final completedRideStatus = Map<String, dynamic>.from(_currentRideStatus);
                         completedRideStatus['status'] = 'completed';
-                        completedRideStatus['final_price'] = currentTotal > 0 ? currentTotal : (_currentRideStatus['estimated_price'] ?? widget.rideDetails['estimated_price'] ?? 0);
+                        
+                        // ✅ KRİTİK: BACKEND DEĞERLERİ ÖNCELİKLİ - Ödeme ekranı bunları kullanacak!
+                        completedRideStatus['final_price'] = currentTotal > 0 ? currentTotal : calculatedTotal;
+                        completedRideStatus['total_distance'] = backendTotalDistance ?? _getCurrentKm();
+                        completedRideStatus['waiting_minutes'] = backendWaitingMinutes ?? _getWaitingMinutes();
+                        completedRideStatus['ride_duration_hours'] = _getUsedHours();
+                        completedRideStatus['service_type'] = backendServiceType;
+                        completedRideStatus['location_extra_fee'] = backendLocationExtraFee ?? 0;
+                        completedRideStatus['distance_price'] = backendDistancePrice;
+                        completedRideStatus['waiting_fee'] = backendWaitingFee;
+                        
+                        final locationFee = backendLocationExtraFee ?? 0;
+                        print('💰 [MÜŞTERİ] Ödeme ekranına yönlendiriliyor - Backend Final: ₺$backendFinalPrice, Distance: ₺$backendDistancePrice, Waiting: ₺$backendWaitingFee, KM: $backendTotalDistance, Özel Konum: ₺$locationFee');
                         
                         Navigator.of(context).pushReplacement(
                           MaterialPageRoute(
@@ -1550,7 +1674,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
               print('🔄 === MÜŞTERİ: STATUS DEĞİŞİMİ TESPİT EDİLDİ! ===');
               print('   📌 Önceki: $previousStatus');
               print('   📌 Yeni: $newStatus');
-              print('   ✅ UI GÜNCELLEND İ - Ekran yeniden render edildi!');
+              print('   ✅ UI GÜNCELLENDİ - Ekran yeniden render edildi!');
               
               // ACCEPTED → IN_PROGRESS geçişinde özel mesaj
               if (previousStatus == 'accepted' && newStatus == 'in_progress') {
@@ -1558,6 +1682,12 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
                 print('   ✅ Sürücü yolculuğu başlattı');
                 print('   📲 Ekran otomatik güncellendi');
               }
+              
+              // 🔥 STATUS DEĞİŞTİĞİNDE ROTA ÇİZGİSİNİ GÜNCELLE!
+              // accepted: sürücü → müşteri
+              // in_progress: sürücü → varış noktası
+              _updateRoutePolyline();
+              print('🛣️ === MÜŞTERİ: ROTA ÇİZGİSİ GÜNCELLENDİ! ===');
             }
             
             // Persistence güncelle
@@ -1567,11 +1697,31 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
             if (status == 'completed') {
               _trackingTimer?.cancel();
               if (mounted) {
+                // ✅ KRİTİK: BACKEND DEĞERLERİ ÖNCELİKLİ - Ödeme ekranı doğru tutar göstersin!
+                final paymentRideStatus = Map<String, dynamic>.from(_currentRideStatus);
+                final calculatedTotal = double.tryParse(_calculateCurrentTotal()) ?? 0.0;
+                
+                // Backend'den gelen değerleri öncelikli kullan
+                final backendFinalPrice = _currentRideStatus['final_price'];
+                paymentRideStatus['final_price'] = (backendFinalPrice != null && backendFinalPrice > 0) 
+                    ? backendFinalPrice : calculatedTotal;
+                paymentRideStatus['total_distance'] = _currentRideStatus['total_distance'] ?? _getCurrentKm();
+                paymentRideStatus['waiting_minutes'] = _currentRideStatus['waiting_minutes'] ?? _getWaitingMinutes();
+                paymentRideStatus['ride_duration_hours'] = _getUsedHours();
+                paymentRideStatus['service_type'] = _currentRideStatus['service_type'] ?? widget.rideDetails['service_type'] ?? 'vale';
+                // ✅ ÖZEL KONUM ÜCRETİ - Backend'den gelen değeri kullan!
+                paymentRideStatus['location_extra_fee'] = _currentRideStatus['location_extra_fee'] ?? 0;
+                // ✅ MESAFE VE BEKLEME ÜCRETİ - Backend'den gelen değerleri kullan!
+                paymentRideStatus['distance_price'] = _currentRideStatus['distance_price'];
+                paymentRideStatus['waiting_fee'] = _currentRideStatus['waiting_fee'];
+                
+                print('💰 [MÜŞTERİ] Polling completed - Backend değerleri: final_price=${paymentRideStatus['final_price']}, distance_price=${paymentRideStatus['distance_price']}, waiting_fee=${paymentRideStatus['waiting_fee']}');
+                
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(
                     builder: (context) => RidePaymentScreen(
                       rideDetails: Map<String, dynamic>.from(widget.rideDetails),
-                      rideStatus: Map<String, dynamic>.from(_currentRideStatus),
+                      rideStatus: paymentRideStatus,
                     ),
                   ),
                 );
@@ -2912,23 +3062,96 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
     }
   }
 
-  // ROTA ÇİZGİSİ GÜNCELLE - ŞOFÖRDEN MÜŞTERİYE! ✅
-  // Google Directions API ile gerçek yol rotası
+  // ROTA ÇİZGİSİ GÜNCELLE - DURUMA GÖRE HEDEF BELİRLE! ✅
+  // accepted: sürücü → pickup (müşteri konumu)
+  // in_progress: sürücü → destination (varış noktası)
   List<LatLng> _routePoints = []; // Rota noktaları cache
   LatLng? _lastDriverLocationForRoute; // Son rota çizilen konum
+  String? _lastRouteStatus; // Son rota durumu (status değişince yeni rota çek)
   
   void _updateRoutePolyline() {
-    if (_driverLocation == null || _customerLocation == null) return;
+    if (_driverLocation == null) return;
     
-    // Şoför konumu önemli ölçüde değiştiyse yeni rota çek (50 metre)
-    if (_lastDriverLocationForRoute == null || 
+    // ✅ HEDEF NOKTA BELİRLE - DURUMA GÖRE!
+    final String currentStatus = _currentRideStatus['status']?.toString() ?? 
+                                  widget.rideDetails['status']?.toString() ?? 'accepted';
+    
+    LatLng? targetLocation;
+    String targetType = 'pickup';
+    
+    if (currentStatus == 'in_progress' || currentStatus == 'ride_started') {
+      // Yolculuk başladı - sürücü → VARIŞ NOKTASI
+      final destLat = (widget.rideDetails['destination_lat'] as num?)?.toDouble() ??
+                      (widget.rideDetails['destination_latitude'] as num?)?.toDouble() ??
+                      (_currentRideStatus['destination_lat'] as num?)?.toDouble();
+      final destLng = (widget.rideDetails['destination_lng'] as num?)?.toDouble() ??
+                      (widget.rideDetails['destination_longitude'] as num?)?.toDouble() ??
+                      (_currentRideStatus['destination_lng'] as num?)?.toDouble();
+      
+      if (destLat != null && destLng != null && destLat != 0 && destLng != 0) {
+        targetLocation = LatLng(destLat, destLng);
+        targetType = 'destination';
+        print('🎯 [MÜŞTERİ] Rota hedefi: VARIŞ NOKTASI ($destLat, $destLng)');
+      }
+    }
+    
+    // Fallback: pickup (müşteri konumu)
+    if (targetLocation == null && _customerLocation != null) {
+      targetLocation = _customerLocation;
+      targetType = 'pickup';
+      print('🎯 [MÜŞTERİ] Rota hedefi: ALIŞ NOKTASI');
+    }
+    
+    if (targetLocation == null) {
+      print('⚠️ [MÜŞTERİ] Hedef konum bulunamadı - rota çizilmeyecek');
+      return;
+    }
+    
+    // ✅ SULTANAHMET (VARSAYILAN) KONTROLÜ - Gerçek konum değilse rota çizme!
+    final bool isDriverLocationValid = 
+        (_driverLocation!.latitude != 41.0082 || _driverLocation!.longitude != 28.9784) && // Sultanahmet değil
+        (_driverLocation!.latitude != 0 && _driverLocation!.longitude != 0) && // 0,0 değil
+        (_driverLocation!.latitude > 35 && _driverLocation!.latitude < 43 && 
+         _driverLocation!.longitude > 25 && _driverLocation!.longitude < 45); // Türkiye sınırları
+    
+    if (!isDriverLocationValid) {
+      print('⚠️ [MÜŞTERİ] Sürücü konumu geçersiz/varsayılan - rota çizilmeyecek');
+      // Mevcut rotayı temizle
+      setState(() {
+        _polylines = {};
+      });
+      return;
+    }
+    
+    // Status değiştiyse (örn: accepted→in_progress) yeni rota çek
+    final bool statusChanged = _lastRouteStatus != null && _lastRouteStatus != currentStatus;
+    
+    // ✅ Son rota konumu geçersiz mi kontrol et (Sultanahmet veya 0,0 koordinatları)
+    final bool isLastRouteLocationValid = _lastDriverLocationForRoute != null &&
+        (_lastDriverLocationForRoute!.latitude != 41.0082 || _lastDriverLocationForRoute!.longitude != 28.9784) &&
+        (_lastDriverLocationForRoute!.latitude != 0 && _lastDriverLocationForRoute!.longitude != 0) &&
+        (_lastDriverLocationForRoute!.latitude > 35 && _lastDriverLocationForRoute!.latitude < 43 && 
+         _lastDriverLocationForRoute!.longitude > 25 && _lastDriverLocationForRoute!.longitude < 45);
+    
+    // Şoför konumu önemli ölçüde değiştiyse VEYA son rota konumu geçersizse yeni rota çek (50 metre)
+    if (statusChanged || !isLastRouteLocationValid || 
         _haversineDistance(
-          _lastDriverLocationForRoute!.latitude, 
-          _lastDriverLocationForRoute!.longitude,
+          _lastDriverLocationForRoute?.latitude ?? 0, 
+          _lastDriverLocationForRoute?.longitude ?? 0,
           _driverLocation!.latitude,
           _driverLocation!.longitude
         ) > 0.05) { // 50 metre
-      _fetchRouteFromDirectionsAPI();
+      
+      if (statusChanged) {
+        print('🔄 [MÜŞTERİ] Status değişti (${ _lastRouteStatus} → $currentStatus) - yeni rota çekiliyor');
+      } else if (!isLastRouteLocationValid) {
+        print('🔄 [MÜŞTERİ] Son rota konumu geçersiz/varsayılan - yeni rota çekiliyor');
+      } else {
+        print('🛣️ [MÜŞTERİ] Rota güncelleniyor - sürücü ${(_haversineDistance(_lastDriverLocationForRoute?.latitude ?? 0, _lastDriverLocationForRoute?.longitude ?? 0, _driverLocation!.latitude, _driverLocation!.longitude) * 1000).toStringAsFixed(0)}m hareket etti');
+      }
+      
+      _lastRouteStatus = currentStatus;
+      _fetchRouteFromDirectionsAPI(targetLocation, targetType);
     } else {
       // Mevcut rota ile güncelle
       _drawRoutePolyline();
@@ -2936,13 +3159,13 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
   }
   
   // Google Directions API'den gerçek yol rotası al
-  Future<void> _fetchRouteFromDirectionsAPI() async {
-    if (_driverLocation == null || _customerLocation == null) return;
+  Future<void> _fetchRouteFromDirectionsAPI(LatLng target, String targetType) async {
+    if (_driverLocation == null) return;
     
     try {
       final String apiKey = 'AIzaSyAmPUh6vlin_kvFvssOyKHz5BBjp5WQMaY';
       final String origin = '${_driverLocation!.latitude},${_driverLocation!.longitude}';
-      final String destination = '${_customerLocation!.latitude},${_customerLocation!.longitude}';
+      final String destination = '${target.latitude},${target.longitude}';
       
       final String url = 'https://maps.googleapis.com/maps/api/directions/json'
           '?origin=$origin'
@@ -3110,7 +3333,7 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
             // Telefon Butonu - ŞİRKETİ ARA POPUP!
             _buildBottomBarItem(
               icon: Icons.phone,
-              label: 'Ara',
+              label: 'Şirketi Ara',
               isActive: false,
               onTap: () => _showCompanyCallPopup(),
             ),
@@ -3370,15 +3593,131 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
     return _initialEstimatedPrice.toStringAsFixed(0);
   }
   
-  // ✅ GÜNCEL TOPLAM (DİNAMİK - Backend'den direkt çek, ZATEN BEKLEME DAHİL!)
+  // ✅ GÜNCEL TOPLAM (DİNAMİK - Panel'den çekilen fiyatlarla hesapla!)
   String _calculateCurrentTotal() {
-    // ✅ Backend'den gelen estimated_price kullan (backend zaten bekleme + distance_pricing hesaplıyor!)
-    // ⚠️ BEKLEME TEKRAR EKLEME - Backend'den gelen fiyat zaten bekleme dahil!
-    final backendPrice = _currentRideStatus['estimated_price'] ?? 
-                         widget.rideDetails['estimated_price'] ?? 0.0;
-    final total = double.tryParse(backendPrice.toString()) ?? 0.0;
+    // SAATLİK PAKETTE: KULLANILAN SÜREYE GÖRE PAKET FİYATI!
+    if (_isHourlyPackage()) {
+      // Kullanılan süreyi hesapla (saat cinsinden)
+      final usedHours = _getUsedHours();
+      
+      // Kullanılan süreye göre paket fiyatını bul
+      final packagePrice = _getHourlyPackagePriceForUsedHours(usedHours);
+      
+      print('📦 [MÜŞTERİ] Güncel tutar: Kullanılan ${usedHours.toStringAsFixed(1)} saat → ₺$packagePrice');
+      return packagePrice.toStringAsFixed(0);
+    }
+    
+    // NORMAL YOLCULUK - KM fiyatı + Bekleme ücreti
+    final currentKm = double.tryParse(_getCurrentKm()) ?? 0.0;
+    final waitingMinutes = _getWaitingMinutes();
+    
+    // 1. KM FİYATI - Panel'den çekilen distance_pricing'e göre
+    double kmPrice = _getKmPriceFromCache(currentKm);
+    
+    // 2. BEKLEME ÜCRETİ
+    double waitingFee = 0.0;
+    if (waitingMinutes > _waitingFreeMinutes) {
+      final chargeableMinutes = waitingMinutes - _waitingFreeMinutes;
+      final intervals = (chargeableMinutes / _waitingIntervalMinutes).ceil();
+      waitingFee = intervals * _waitingFeePerInterval;
+    }
+    
+    // TOPLAM = KM Fiyatı + Bekleme Ücreti
+    final total = kmPrice + waitingFee;
     
     return total.toStringAsFixed(0);
+  }
+  
+  // ✅ KULLANILAN SÜREYİ HESAPLA (saat cinsinden)
+  double _getUsedHours() {
+    // Backend'den gelen ride_duration_hours kullan (en doğrusu!)
+    final rideDurationHours = _currentRideStatus['ride_duration_hours'] ?? 
+                              widget.rideDetails['ride_duration_hours'];
+    if (rideDurationHours != null) {
+      final hours = double.tryParse(rideDurationHours.toString()) ?? 0.0;
+      if (hours > 0) return hours;
+    }
+    
+    // Fallback: started_at'tan hesapla
+    final startedAtStr = _currentRideStatus['started_at']?.toString() ?? 
+                         widget.rideDetails['started_at']?.toString();
+    if (startedAtStr != null && startedAtStr.isNotEmpty) {
+      try {
+        final startedAt = DateTime.parse(startedAtStr);
+        final now = DateTime.now();
+        final diffMinutes = now.difference(startedAt).inMinutes;
+        return diffMinutes / 60.0;
+      } catch (e) {
+        print('⚠️ [MÜŞTERİ] started_at parse hatası: $e');
+      }
+    }
+    
+    return 0.0;
+  }
+  
+  // ✅ KULLANILAN SÜREYE GÖRE SAATLİK PAKET FİYATINI BUL
+  double _getHourlyPackagePriceForUsedHours(double usedHours) {
+    if (_cachedHourlyPackages.isEmpty) {
+      // Cache boşsa backend'den gelen fiyatı kullan
+      final backendPrice = _currentRideStatus['estimated_price'] ?? 
+                           widget.rideDetails['estimated_price'] ?? 3000.0;
+      return double.tryParse(backendPrice.toString()) ?? 3000.0;
+    }
+    
+    // Kullanılan süreye göre doğru paket aralığını bul
+    for (var pkg in _cachedHourlyPackages) {
+      final start = pkg['start'] ?? 0.0;
+      final end = pkg['end'] ?? 0.0;
+      final price = pkg['price'] ?? 0.0;
+      
+      if (usedHours >= start && usedHours < end) {
+        return price;
+      }
+    }
+    
+    // Son paket (12+ saat için)
+    if (_cachedHourlyPackages.isNotEmpty) {
+      final lastPkg = _cachedHourlyPackages.last;
+      final lastEnd = lastPkg['end'] ?? 12.0;
+      if (usedHours >= lastEnd) {
+        return lastPkg['price'] ?? 6000.0;
+      }
+    }
+    
+    // İlk paket (fallback)
+    if (_cachedHourlyPackages.isNotEmpty) {
+      return _cachedHourlyPackages.first['price'] ?? 3000.0;
+    }
+    
+    return 3000.0; // Varsayılan minimum
+  }
+  
+  // ✅ KM'ye göre fiyatı cache'den bul
+  double _getKmPriceFromCache(double km) {
+    if (_cachedDistancePricing.isEmpty) {
+      // Cache boşsa backend'den gelen fiyatı kullan
+      final backendPrice = _currentRideStatus['estimated_price'] ?? 
+                           widget.rideDetails['estimated_price'] ?? 1000.0;
+      return double.tryParse(backendPrice.toString()) ?? 1000.0;
+    }
+    
+    // KM'ye göre doğru fiyat aralığını bul
+    for (var pricing in _cachedDistancePricing) {
+      final minKm = pricing['min_km'] as double;
+      final maxKm = pricing['max_km'] as double;
+      final price = pricing['price'] as double;
+      
+      if (km >= minKm && km < maxKm) {
+        return price;
+      }
+    }
+    
+    // Eşleşme bulunamazsa en yüksek aralığı kullan
+    if (_cachedDistancePricing.isNotEmpty) {
+      return _cachedDistancePricing.last['price'] as double;
+    }
+    
+    return 1000.0; // Fallback
   }
   
   // ✅ KM FİYATI PANEL'DEN ÇEK
@@ -3388,41 +3727,25 @@ Kabul Tarihi: ${DateTime.now().toString().split(' ')[0]}
     return double.tryParse(kmPrice.toString()) ?? 8.0;
   }
   
-  // ✅ BEKLEME ÜCRETİ HESAPLA (İlk 15dk ücretsiz, sonra panel'den waiting_fee_per_interval)
+  // ✅ BEKLEME ÜCRETİ HESAPLA (Cache'deki değerleri kullan!)
   String _calculateWaitingFee() {
     final waiting = _getWaitingMinutes();
     
-    // Panel'den ayarları çek
-    final freeMinutes = _currentRideStatus['waiting_free_minutes'] ?? 
-                        widget.rideDetails['waiting_free_minutes'] ?? 15;
-    final freeMinutesInt = int.tryParse(freeMinutes.toString()) ?? 15;
+    if (waiting <= _waitingFreeMinutes) return '0';
     
-    if (waiting <= freeMinutesInt) return '0';
-    
-    final feePerInterval = _currentRideStatus['waiting_fee_per_interval'] ?? 
-                           widget.rideDetails['waiting_fee_per_interval'] ?? 200.0;
-    final feePerIntervalDouble = double.tryParse(feePerInterval.toString()) ?? 200.0;
-    
-    final intervalMinutes = _currentRideStatus['waiting_interval_minutes'] ?? 
-                            widget.rideDetails['waiting_interval_minutes'] ?? 15;
-    final intervalMinutesInt = int.tryParse(intervalMinutes.toString()) ?? 15;
-    
-    final chargeableMinutes = waiting - freeMinutesInt;
-    final intervals = (chargeableMinutes / intervalMinutesInt).ceil();
-    final fee = intervals * feePerIntervalDouble;
+    final chargeableMinutes = waiting - _waitingFreeMinutes;
+    final intervals = (chargeableMinutes / _waitingIntervalMinutes).ceil();
+    final fee = intervals * _waitingFeePerInterval;
     return fee.toInt().toString();
   }
 
   String _getWaitingFeeSubtitle() {
-    final freeMinutes = _currentRideStatus['waiting_free_minutes'] ??
-        widget.rideDetails['waiting_free_minutes'] ?? 15;
-    final freeMinutesInt = int.tryParse(freeMinutes.toString()) ?? 15;
     final feeStr = _calculateWaitingFee();
     final feeValue = double.tryParse(feeStr) ?? 0.0;
     if (feeValue <= 0) {
-      return 'Ücretsiz (İlk $freeMinutesInt dk)';
+      return 'Ücretsiz (İlk $_waitingFreeMinutes dk)';
     }
-    return 'Ücret: ₺${feeValue.toStringAsFixed(0)} (İlk $freeMinutesInt dk ücretsiz)';
+    return 'Ücret: ₺${feeValue.toStringAsFixed(0)} (İlk $_waitingFreeMinutes dk ücretsiz)';
   }
   
   // SAATLİK PAKETTE SÜRE, NORMAL VALEDE BEKLEME

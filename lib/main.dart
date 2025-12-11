@@ -38,7 +38,7 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // Firebase'i başlat (iOS'te AppDelegate'te zaten yapıldı)
   if (Platform.isAndroid) {
-    await Firebase.initializeApp();
+  await Firebase.initializeApp();
   }
   
   print('📱 === MÜŞTERİ BACKGROUND BİLDİRİM ===');
@@ -101,18 +101,18 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // ⚠️ iOS'te Firebase.configure() AppDelegate'te yapılıyor!
-  if (Platform.isAndroid) {
-    try {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
-      print('✅ Firebase başlatıldı (Android)');
-    } catch (e) {
-      print('⚠️ Firebase init hatası: $e');
+  // ⚠️ Firebase initialization - Flutter plugin tüm platformlarda!
+  try {
+    if (Firebase.apps.isEmpty) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+      print('✅ MÜŞTERİ Firebase başlatıldı (${Platform.isAndroid ? "Android" : "iOS"})');
+    } else {
+      print('⚠️ MÜŞTERİ Firebase zaten başlatılmış');
     }
-  } else {
-    print('📱 iOS: Firebase.configure() AppDelegate tarafından yapıldı');
+  } catch (e) {
+    print('⚠️ MÜŞTERİ Firebase init hatası (duplicate normal): $e');
   }
   
   // BACKGROUND MESSAGE HANDLER KAYDET - Firebase başlatıldıktan sonra!
@@ -158,28 +158,16 @@ void main() async {
 }
 
 Future<void> _initializeFirebaseMessaging() async {
-  // ✅ SADECE FCM TOKEN KAYDET - BİLDİRİMLER AdvancedNotificationService TARAFINDAN YÖNETİLİYOR!
-  FirebaseMessaging messaging = FirebaseMessaging.instance;
+  // ✅ TÜM FCM İŞLEMLERİ AdvancedNotificationService TARAFINDAN YAPILIYOR!
+  // ⚠️ BURADA requestPermission() ÇAĞIRMIYORUZ - "Too many server requests" hatasını önlemek için!
+  // AdvancedNotificationService.initialize() zaten _requestPermissions() çağırıyor.
   
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final userId = prefs.getString('user_id') ?? prefs.getString('admin_user_id');
-    
-    if (userId != null && userId.isNotEmpty) {
-      final fcmToken = await messaging.getToken();
-      
-      if (fcmToken != null && fcmToken.isNotEmpty) {
-        print('📱 [MÜŞTERİ] FCM Token alındı: ${fcmToken.substring(0, 20)}...');
-        await _saveCustomerFCMToken(fcmToken);
-      }
-    } else {
-      print('⚠️ [MÜŞTERİ] User ID yok - FCM token kaydedilmedi (login sonrası yapılacak)');
-    }
-  } catch (e) {
-    print('⚠️ [MÜŞTERİ] FCM token kaydetme hatası: $e');
-  }
+  print('✅ FCM setup - AdvancedNotificationService tüm işlemleri yönetiyor');
+  print('   📱 Permission: AdvancedNotificationService._requestPermissions()');
+  print('   🔑 Token: AdvancedNotificationService._getFcmTokenDirect()');
   
-  print('✅ FCM token setup tamamlandı - Bildirimler AdvancedNotificationService tarafından yönetiliyor');
+  // NOT: Eski kod "Too many server requests" hatasına neden oluyordu
+  // requestPermission() iki kez çağrılıyordu: main.dart + AdvancedNotificationService
 }
 
 // MÜŞTERİ FCM TOKEN KAYDETME - ŞOFÖR GİBİ ÇALIŞIYOR!
@@ -257,35 +245,19 @@ Future<void> _saveCustomerFCMToken(String fcmToken) async {
 Future<void> requestPermissions() async {
   try {
     if (Platform.isIOS) {
-      // iOS için özel izin sistemi
+      // ✅ iOS için bildirim izni AdvancedNotificationService tarafından istenecek!
+      // "Too many server requests" hatasını önlemek için burada requestPermission() ÇAĞIRMIYORUZ!
       print('📱 iOS izinleri isteniyor...');
-      
-      // Bildirim izni (iOS için Firebase üzerinden)
-      final messaging = FirebaseMessaging.instance;
-      final settings = await messaging.requestPermission(
-        alert: true,
-        announcement: true,
-        badge: true,
-        carPlay: false,
-        criticalAlert: true,
-        provisional: false,
-        sound: true,
-      );
-      
-      if (settings.authorizationStatus == AuthorizationStatus.authorized) {
-        print('✅ iOS bildirim izni verildi');
-      } else {
-        print('⚠️ iOS bildirim izni reddedildi');
-      }
-      
-      // Konum izni
+      print('📱 iOS: Bildirim izni AdvancedNotificationService tarafından istenecek');
+    
+    // Konum izni (sadece konum, bildirim değil)
       await Permission.locationWhenInUse.request();
       await Permission.locationAlways.request();
       
-    } else {
+    } else if (Platform.isAndroid) {
       // Android için mevcut sistem
       await Permission.notification.request();
-      await Permission.location.request();
+    await Permission.location.request();
     }
     
     print('✅ İzinler istendi (${Platform.operatingSystem})');

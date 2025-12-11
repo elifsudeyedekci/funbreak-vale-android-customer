@@ -67,6 +67,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   String _selectedTimeOption = 'Hemen';
   String _selectedServiceType = 'vale'; // 'vale' or 'hourly'
   double? _estimatedPrice;
+  double _estimatedDistance = 0.0; // 🆕 Tahmini mesafe (km)
+  double _locationExtraFee = 0.0; // 🆕 Özel konum ücreti
+  String? _locationExtraFeeName; // 🆕 Özel konum adı (pickup veya destination)
   List<HourlyPackage> _hourlyPackages = [];
   HourlyPackage? _selectedHourlyPackage;
   double? _originalPrice;
@@ -183,11 +186,15 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           if (rideStatus == 'accepted' || rideStatus == 'in_progress') {
             print('✅ Vale KABUL ETTİ ($rideStatus) - yolculuk ekranı açılıyor');
           
-          // Otomatik yolculuk ekranına git
-          Navigator.pushNamed(context, '/modern_active_ride', arguments: {
-            'rideDetails': activeRide,
-            'isFromBackend': true,
-          });
+            // ✅ Otomatik yolculuk ekranına git - MOUNTED KONTROL + DOĞRU NAVIGATION
+            if (mounted) {
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => ModernActiveRideScreen(rideDetails: activeRide),
+                ),
+              );
+            }
           } else if (rideStatus == 'scheduled' || rideStatus == 'pending') {
             print('📅 Bekleyen yolculuk ($rideStatus) - Yolculuk ekranı AÇILMAYACAK!');
             // Yolculuk ekranı açılmaz - kullanıcı rezervasyonlardan görebilir
@@ -242,8 +249,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _animationController.dispose();
     // TİMER TEMİZLEME - MEMORY LEAK ÖNLEME
     _driverSearchTimer?.cancel();
+    _realTimeSearchTimer?.cancel(); // GERÇEK ZAMANLI ARAMA TIMER!
     _searchDebounce?.cancel(); // SEARCH DEBOUNCE TIMER!
     _driverSearchTimer = null;
+    _realTimeSearchTimer = null;
     super.dispose();
   }
 
@@ -437,27 +446,59 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         double totalLocationFee = pickupFee + destinationFee + waypointsFee;
         double totalPrice = distancePrice + totalLocationFee;
         
+        // 🆕 Özel konum adını belirle (pickup veya destination hangisiyse)
+        String? locationName;
+        if (pickupFee > 0) locationName = 'Alış konumu özel bölge';
+        if (destinationFee > 0) locationName = (locationName != null) ? '$locationName + Varış konumu özel bölge' : 'Varış konumu özel bölge';
+        
         setState(() {
           _estimatedPrice = totalPrice;
           _originalPrice = totalPrice;
+          _estimatedDistance = totalDistance; // 🆕 Tahmini mesafe
+          _locationExtraFee = totalLocationFee; // 🆕 Özel konum ücreti
+          _locationExtraFeeName = locationName; // 🆕 Özel konum adı
           _isLoading = false;
         });
         
         print('✅ Ara duraklı fiyat (Özel Konum Dahil): ₺$totalPrice (Mesafe: ₺$distancePrice, Özel Konum: ₺$totalLocationFee)');
       } else {
-        // Normal fiyat hesaplama (ara durak yok) - PricingService zaten özel konum ekliyor
-        double totalPrice = await PricingService.calculateTotalPrice(
+        // Normal fiyat hesaplama (ara durak yok) - PricingService'den detaylı bilgi al
+        final pricingData = await PricingService.getPricingData();
+        
+        // Mesafe hesapla
+        double distance = await PricingService.calculateRouteDistance(
           originLat: _pickupLocation!.latitude,
           originLng: _pickupLocation!.longitude,
-          destinationLat: _destinationLocation!.latitude,
-          destinationLng: _destinationLocation!.longitude,
+          destLat: _destinationLocation!.latitude,
+          destLng: _destinationLocation!.longitude,
         );
+        
+        // Mesafe fiyatı
+        double distancePrice = PricingService.calculateDistancePrice(distance, pricingData?['distance_pricing']);
+        
+        // Özel konum ücretleri
+        double pickupFee = PricingService.checkLocationPricing(_pickupLocation!.latitude, _pickupLocation!.longitude, pricingData?['location_pricing']);
+        double destinationFee = PricingService.checkLocationPricing(_destinationLocation!.latitude, _destinationLocation!.longitude, pricingData?['location_pricing']);
+        double totalLocationFee = pickupFee + destinationFee;
+        
+        // Toplam fiyat
+        double totalPrice = distancePrice + totalLocationFee;
+        
+        // 🆕 Özel konum adını belirle
+        String? locationName;
+        if (pickupFee > 0) locationName = 'Alış konumu özel bölge';
+        if (destinationFee > 0) locationName = (locationName != null) ? '$locationName + Varış konumu özel bölge' : 'Varış konumu özel bölge';
 
         setState(() {
           _estimatedPrice = totalPrice;
           _originalPrice = totalPrice;
+          _estimatedDistance = distance; // 🆕 Tahmini mesafe
+          _locationExtraFee = totalLocationFee; // 🆕 Özel konum ücreti
+          _locationExtraFeeName = locationName; // 🆕 Özel konum adı
           _isLoading = false;
         });
+        
+        print('✅ Normal fiyat: ₺$totalPrice (Mesafe: ${distance.toStringAsFixed(1)} km = ₺$distancePrice, Özel Konum: ₺$totalLocationFee)');
       }
     } catch (e) {
       print('Fiyat hesaplama hatası: $e');
@@ -692,7 +733,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                                 child: _buildServiceTypeButton(
                                   'vale',
                                   'Mesafe Bazlı (KM)',
-                                  Icons.directions_car,
+                                  Icons.route, // 🆕 Mesafe ikonu (araba yerine)
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -1061,11 +1102,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         const SizedBox(height: 8),
                                 Row(
                                   children: [
-            Expanded(child: _buildModernTimeOption('Hemen\n(Tahmini 30 Dk)')),
+            Expanded(flex: 1, child: _buildModernTimeOption('Hemen\n(Tahmini 30 Dk)')),
             const SizedBox(width: 6),
-            Expanded(child: _buildModernTimeOption('1 Saat Sonra')),
+            Expanded(flex: 1, child: _buildModernTimeOption('1 Saat\nSonra')),
             const SizedBox(width: 6),
-            Expanded(child: _buildModernTimeOption('Özel Saat')),
+            Expanded(flex: 1, child: _buildModernTimeOption('Özel\nSaat')),
                                   ],
                                 ),
                               ],
@@ -1082,7 +1123,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           _selectedTimeOption = option;
         });
         
-        if (option == 'Özel Saat') {
+        if (option == 'Özel\nSaat') {
           _showCustomTimePicker();
         } else {
           setState(() {
@@ -1655,7 +1696,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         } : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: const Color(0xFFFFD700),
-                          foregroundColor: Colors.white,
+                          foregroundColor: Colors.black,
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(16),
                           ),
@@ -1664,13 +1705,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(Icons.flash_auto, size: 24),
+                            const Icon(Icons.flash_auto, size: 24, color: Colors.black),
                             const SizedBox(width: 12),
                             Text(
                               _selectedServiceType == 'vale' ? 'Vale Çağır' : 'Saatlik Paket Al',
                               style: const TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
+                                color: Colors.black,
                               ),
                             ),
                           ],
@@ -1918,8 +1960,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildTripDetailRow(String title, String value, IconData icon, Color iconColor) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    
     return Row(
       children: [
         Container(
@@ -1939,16 +1979,16 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                 title,
                 style: TextStyle(
                   fontSize: 12,
-                  color: themeProvider.isDarkMode ? Colors.grey[400] : Colors.grey[600],
+                  color: Colors.grey[400], // ✅ Her zaman açık gri (dark arka planda görünsün)
                   fontWeight: FontWeight.w500,
                 ),
               ),
               const SizedBox(height: 2),
               Text(
                 value,
-                style: TextStyle(
+                style: const TextStyle(
                   fontSize: 14,
-                  color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
+                  color: Colors.white, // ✅ Her zaman beyaz (dark arka planda görünsün)
                   fontWeight: FontWeight.w600,
                 ),
                 maxLines: 2,
@@ -2058,14 +2098,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
   
   // GERÇEK ZAMANLI SÜRÜCÜ ARAMA VE KABUL TAKİBİ - PANEL API ENTEGRASYONU! (2s interval - HIZLI!)
+  Timer? _realTimeSearchTimer; // Timer referansı tutulacak
+  
   void _startRealTimeDriverSearch(BuildContext modalContext) {
     // ÖNCE ESKİ TALEPLERİ TEMİZLE!
     _cleanupExpiredRequestsCustomer();
     
-    Timer.periodic(const Duration(seconds: 2), (timer) async {
-      // İptal kontrolü
-      if (_searchCancelled || !modalContext.mounted) {
+    // Önceki timer varsa iptal et
+    _realTimeSearchTimer?.cancel();
+    
+    _realTimeSearchTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+      // İptal kontrolü - ANA WIDGET MOUNTED KONTROL!
+      if (_searchCancelled || !mounted) {
         timer.cancel();
+        _realTimeSearchTimer = null;
         return;
       }
       
@@ -3762,7 +3808,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   style: const TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: Colors.black, // ✅ Sarı içi siyah yazı
                   ),
                 ),
               ),
@@ -4406,7 +4452,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           final serverTime = await TimeService.getServerTime();
           print('🌐 Sunucu saati: $serverTime');
           
-          if (_selectedTimeOption == '1 Saat Sonra') {
+          if (_selectedTimeOption == '1 Saat\nSonra') {
             scheduledDateTime = serverTime.add(const Duration(hours: 1));
           } else if (_selectedTimeOption == '2 Saat Sonra') {
             scheduledDateTime = serverTime.add(const Duration(hours: 2));
@@ -5117,7 +5163,70 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           ),
           const SizedBox(height: 10), // 16 → 10
           
-          // TAHMİNİ FİYAT KALDIRILDI - SADECE TUTAR GÖZÜKSÜN
+          // 🆕 TAHMİNİ MESAFE
+          if (_selectedServiceType == 'vale' && _estimatedDistance > 0) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.route, size: 16, color: Colors.blue),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Tahmini Mesafe:',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: themeProvider.isDarkMode ? Colors.grey[300] : Colors.grey[700],
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  '${_estimatedDistance.toStringAsFixed(1)} km',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
+          
+          // 🆕 ÖZEL KONUM ÜCRETİ (varsa)
+          if (_locationExtraFee > 0) ...[
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.location_on, size: 16, color: Colors.orange),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        _locationExtraFeeName ?? 'Özel Konum Ücreti:',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.orange[700],
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  '+₺${_locationExtraFee.toStringAsFixed(0)}',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.orange[700],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+          ],
           
           // İNDİRİM
           if (_discountAmount > 0) ...[
@@ -5172,7 +5281,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                    color: Colors.black, // ✅ Sarı içi siyah yazı
                   ),
                 ),
               ),
@@ -6962,9 +7071,9 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
             children: [
               Text(
                 label,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
-                  color: Colors.grey,
+                  color: Colors.grey[400], // ✅ Daha açık gri
                   fontWeight: FontWeight.w500,
                 ),
               ),
@@ -6973,7 +7082,7 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
                 style: const TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: Colors.black87,
+                  color: Colors.white, // ✅ Beyaz yazı
                 ),
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
@@ -7227,7 +7336,7 @@ Kabul etmekle bu şartları onaylamış bulunmaktasınız.
     
     // Otomatik seçenekler - SERVER SAATİ KULLAN!
     DateTime calculatedTime;
-    if (_selectedTimeOption == '1 Saat Sonra') {
+    if (_selectedTimeOption == '1 Saat\nSonra') {
       calculatedTime = serverNow.add(const Duration(hours: 1));
     } else if (_selectedTimeOption == '2 Saat Sonra') {
       calculatedTime = serverNow.add(const Duration(hours: 2));

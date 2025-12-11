@@ -1,269 +1,442 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
 import 'dart:convert';
 import 'dart:io';
-import 'sms_verification_screen.dart';
 
-class SmsRegisterScreen extends StatefulWidget {
-  final String? prefilledPhone;
-  
-  const SmsRegisterScreen({Key? key, this.prefilledPhone}) : super(key: key);
+/// SÖZLEŞME GÜNCELLEME EKRANI
+/// 
+/// Bu ekran, kullanıcının kabul etmediği veya eski versiyonunu kabul ettiği
+/// sözleşmeleri gösterir ve onay alır.
+/// 
+/// Kullanım:
+/// Navigator.pushReplacement(context, MaterialPageRoute(
+///   builder: (context) => ContractUpdateScreen(
+///     customerId: 123,
+///     pendingContracts: [...],
+///     onAllAccepted: () => Navigator.pushReplacementNamed(context, '/home'),
+///   ),
+/// ));
+
+class ContractUpdateScreen extends StatefulWidget {
+  final int customerId;
+  final List<Map<String, dynamic>> pendingContracts;
+  final VoidCallback onAllAccepted;
+
+  const ContractUpdateScreen({
+    Key? key,
+    required this.customerId,
+    required this.pendingContracts,
+    required this.onAllAccepted,
+  }) : super(key: key);
 
   @override
-  State<SmsRegisterScreen> createState() => _SmsRegisterScreenState();
+  State<ContractUpdateScreen> createState() => _ContractUpdateScreenState();
 }
 
-class _SmsRegisterScreenState extends State<SmsRegisterScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _emailController = TextEditingController();
+class _ContractUpdateScreenState extends State<ContractUpdateScreen> {
+  final Map<String, bool> _acceptedContracts = {};
   bool _isLoading = false;
-
-  // 📋 YASAL SÖZLEŞME ONAYLARI
-  bool _kvkkAccepted = false;
-  bool _userAgreementAccepted = false;
-  bool _commercialCommunicationAccepted = false;
+  int _currentIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    if (widget.prefilledPhone != null) {
-      String phone = widget.prefilledPhone!;
-      // Sadece rakamları al
-      phone = phone.replaceAll(RegExp(r'[^0-9]'), '');
-      // 90 ile başlıyorsa kaldır (ülke kodu)
-      if (phone.startsWith('90') && phone.length >= 12) {
-        phone = phone.substring(2);
-      }
-      // Başındaki 0'ı kaldır (prefixText zaten 0 gösteriyor)
-      if (phone.startsWith('0')) {
-        phone = phone.substring(1);
-      }
-      _phoneController.text = phone;
+    // Tüm sözleşmeleri onaylanmamış olarak başlat
+    for (var contract in widget.pendingContracts) {
+      _acceptedContracts[contract['type']] = false;
     }
   }
+
+  bool get _allAccepted => _acceptedContracts.values.every((v) => v);
 
   @override
-  void dispose() {
-    _nameController.dispose();
-    _phoneController.dispose();
-    _emailController.dispose();
-    super.dispose();
+  Widget build(BuildContext context) {
+    return WillPopScope(
+      onWillPop: () async {
+        // Geri tuşunu engelle - sözleşmeleri kabul etmeden çıkamaz
+        _showExitWarning();
+        return false;
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF1A1A2E),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF1A1A2E),
+          elevation: 0,
+          automaticallyImplyLeading: false,
+          title: const Text(
+            'Sözleşme Güncelleme',
+            style: TextStyle(color: Colors.white),
+          ),
+          actions: [
+            TextButton(
+              onPressed: _showExitWarning,
+              child: const Text(
+                'Çıkış',
+                style: TextStyle(color: Colors.red),
+              ),
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            // Progress Bar
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Güncellenmiş Sözleşmeler',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 14),
+                      ),
+                      Text(
+                        '${_acceptedContracts.values.where((v) => v).length}/${widget.pendingContracts.length}',
+                        style: const TextStyle(color: Color(0xFFFFD700), fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                    value: _acceptedContracts.values.where((v) => v).length / widget.pendingContracts.length,
+                    backgroundColor: Colors.grey[800],
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFFFD700)),
+                  ),
+                ],
+              ),
+            ),
+
+            // Bilgi Banner
+            Container(
+              margin: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.amber.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.amber.withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: Colors.amber),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Sözleşmelerimiz güncellenmiştir. Devam etmek için yeni sözleşmeleri okumanız ve kabul etmeniz gerekmektedir.',
+                      style: TextStyle(color: Colors.amber[200], fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Sözleşme Listesi
+            Expanded(
+              child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                itemCount: widget.pendingContracts.length,
+                itemBuilder: (context, index) {
+                  final contract = widget.pendingContracts[index];
+                  final isAccepted = _acceptedContracts[contract['type']] ?? false;
+                  
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: isAccepted 
+                        ? Colors.green.withOpacity(0.1) 
+                        : Colors.white.withOpacity(0.05),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isAccepted 
+                          ? Colors.green.withOpacity(0.5)
+                          : Colors.white.withOpacity(0.1),
+                      ),
+                    ),
+                    child: ListTile(
+                      contentPadding: const EdgeInsets.all(16),
+                      leading: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: isAccepted 
+                            ? Colors.green.withOpacity(0.2)
+                            : const Color(0xFFFFD700).withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Icon(
+                          isAccepted ? Icons.check_circle : Icons.description,
+                          color: isAccepted ? Colors.green : const Color(0xFFFFD700),
+                        ),
+                      ),
+                      title: Text(
+                        contract['title'] ?? 'Sözleşme',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const SizedBox(height: 4),
+                          Text(
+                            'Versiyon: ${contract['latest_version']}',
+                            style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                          ),
+                          if (contract['accepted_version'] != '0.0')
+                            Text(
+                              'Önceki: ${contract['accepted_version']}',
+                              style: TextStyle(color: Colors.orange[300], fontSize: 11),
+                            ),
+                        ],
+                      ),
+                      trailing: isAccepted
+                        ? const Icon(Icons.check, color: Colors.green)
+                        : ElevatedButton(
+                            onPressed: () => _showContractDialog(contract),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFFFD700),
+                              foregroundColor: Colors.black,
+                            ),
+                            child: const Text('Oku'),
+                          ),
+                      onTap: () => _showContractDialog(contract),
+                    ),
+                  );
+                },
+              ),
+            ),
+
+            // Alt Buton
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.3),
+                border: Border(
+                  top: BorderSide(color: Colors.white.withOpacity(0.1)),
+                ),
+              ),
+              child: SafeArea(
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 56,
+                  child: ElevatedButton(
+                    onPressed: _allAccepted && !_isLoading ? _submitAllContracts : null,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _allAccepted 
+                        ? const Color(0xFFFFD700) 
+                        : Colors.grey[700],
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: _isLoading
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(
+                            color: Colors.black,
+                            strokeWidth: 2,
+                          ),
+                        )
+                      : Text(
+                          _allAccepted 
+                            ? 'Devam Et' 
+                            : 'Tüm Sözleşmeleri Kabul Edin',
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
-  // Telefon numarası formatla
-  String _formatPhone(String phone) {
-    String cleaned = phone.replaceAll(RegExp(r'[^0-9]'), '');
-    
-    if (cleaned.startsWith('90') && cleaned.length == 12) {
-      cleaned = '0' + cleaned.substring(2);
-    }
-    
-    // 5 ile başlıyorsa başına 0 ekle
-    if (cleaned.startsWith('5') && cleaned.length == 10) {
-      cleaned = '0' + cleaned;
-    }
-    
-    return cleaned;
+  void _showContractDialog(Map<String, dynamic> contract) {
+    final type = contract['type'] as String;
+    final title = contract['title'] as String;
+    final content = _getContractContent(type);
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Dialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Container(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+            maxWidth: MediaQuery.of(context).size.width * 0.95,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Başlık
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: const BoxDecoration(
+                  color: Color(0xFFFFD700),
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(16),
+                    topRight: Radius.circular(16),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.gavel, color: Colors.black),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: const TextStyle(
+                              color: Colors.black,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                          Text(
+                            'Versiyon: ${contract['latest_version']}',
+                            style: const TextStyle(
+                              color: Colors.black54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.black),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+              ),
+              // İçerik
+              Flexible(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    content,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      height: 1.6,
+                    ),
+                  ),
+                ),
+              ),
+              // Butonlar
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.05),
+                  borderRadius: const BorderRadius.only(
+                    bottomLeft: Radius.circular(16),
+                    bottomRight: Radius.circular(16),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white70,
+                          side: const BorderSide(color: Colors.white30),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        child: const Text('Kapat'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: ElevatedButton(
+                        onPressed: () {
+                          setState(() {
+                            _acceptedContracts[type] = true;
+                          });
+                          Navigator.pop(context);
+                        },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFFFFD700),
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        child: const Text(
+                          'Okudum, Kabul Ediyorum',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
-  Future<void> _register() async {
-    if (!_formKey.currentState!.validate()) return;
+  void _showExitWarning() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_amber, color: Colors.orange),
+            SizedBox(width: 12),
+            Text('Dikkat', style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: const Text(
+          'Sözleşmeleri kabul etmeden uygulamayı kullanamazsınız.\n\nÇıkmak istediğinize emin misiniz?',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('İptal', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              // Uygulamadan çıkış
+              exit(0);
+            },
+            child: const Text('Çıkış Yap', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
 
-    // ✅ YASAL SÖZLEŞME KONTROL - ZORUNLU!
-    if (!_kvkkAccepted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('❌ KVKK Aydınlatma Metni\'ni kabul etmelisiniz!'),
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 3),
-        ),
-      );
-      return;
-    }
-    
-    if (!_userAgreementAccepted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('❌ Kullanıcı Sözleşmesi\'ni kabul etmelisiniz!'),
-          backgroundColor: Colors.red,
-          duration: Duration(seconds: 3),
-        ),
-      );
-      return;
-    }
+  Future<void> _submitAllContracts() async {
+    if (!_allAccepted) return;
 
     setState(() => _isLoading = true);
 
     try {
-      final phone = _formatPhone(_phoneController.text.trim());
-      
-      print('📝 KAYIT API ÇAĞRILIYOR...');
-      print('   İsim: ${_nameController.text.trim()}');
-      print('   Telefon: $phone');
-      print('   Email: ${_emailController.text.trim()}');
-      
-      final response = await http.post(
-        Uri.parse('https://admin.funbreakvale.com/api/register.php'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'name': _nameController.text.trim(),
-          'phone': phone,
-          'email': _emailController.text.trim(),
-          'type': 'customer',
-        }),
-      ).timeout(const Duration(seconds: 15));
-
-      print('📡 KAYIT API RESPONSE:');
-      print('   Status: ${response.statusCode}');
-      print('   Body: ${response.body}');
-
-      if (response.statusCode != 200) {
-        throw Exception('Server error: ${response.statusCode}');
-      }
-
-      // Response boş mu kontrol et
-      if (response.body.isEmpty) {
-        throw Exception('Sunucudan yanıt alınamadı');
-      }
-
-      final data = json.decode(response.body);
-      
-      // Data null mı kontrol et
-      if (data == null) {
-        throw Exception('Geçersiz sunucu yanıtı');
-      }
-
-      print('✅ API Yanıt alındı: $data');
-
-      if (data['success'] == true) {
-        // ✅ Kayıt başarılı - YASAL LOGLARI KAYDET
-        if (data['user'] == null || data['user']['id'] == null) {
-          throw Exception('Kullanıcı bilgisi alınamadı');
-        }
-        
-        final userId = int.parse(data['user']['id'].toString());
-        
-        print('✅ Kullanıcı oluşturuldu - ID: $userId');
-        
-        // 📝 SÖZLEŞME LOGLARINI KAYDET (Mahkeme delili)
-        await _logLegalConsents(userId, phone);
-        
-        // SMS doğrulama kodunu gönder
-        print('📱 SMS kodu gönderiliyor...');
-        final smsResponse = await http.post(
-          Uri.parse('https://admin.funbreakvale.com/api/send_verification_code.php'),
-          headers: {'Content-Type': 'application/json'},
-          body: json.encode({
-            'phone': phone,
-            'user_id': userId,
-            'type': 'customer',
-          }),
-        );
-
-        final smsData = json.decode(smsResponse.body);
-        
-        print('📡 SMS API Yanıt: $smsData');
-
-        if (smsData['success'] == true) {
-          if (mounted) {
-            print('✅ SMS gönderildi, doğrulama ekranına yönlendiriliyor...');
-            // Doğrulama ekranına git - İsim ve Email'i de gönder
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(
-                builder: (context) => SmsVerificationScreen(
-                  phone: phone,
-                  userId: userId,
-                  userType: 'customer',
-                  isLogin: false,
-                  userName: _nameController.text.trim(), // ✅ İsim ekle
-                  userEmail: _emailController.text.trim(), // ✅ Email ekle
-                ),
-              ),
-            );
-          }
-        } else {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(smsData['message'] ?? 'SMS gönderilemedi'),
-                backgroundColor: Colors.orange,
-                duration: const Duration(seconds: 4),
-              ),
-            );
-          }
-        }
-      } else {
-        if (mounted) {
-          String errorMsg = 'Kayıt başarısız';
-          if (data['message'] != null) {
-            errorMsg = data['message'].toString();
-          }
-          
-          print('❌ Kayıt hatası: $errorMsg');
-          
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(errorMsg),
-              backgroundColor: Colors.red,
-              duration: const Duration(seconds: 4),
-            ),
-          );
-        }
-      }
-    } catch (e, stackTrace) {
-      print('❌ KAYIT HATASI: $e');
-      print('Stack trace: $stackTrace');
-      
-      if (mounted) {
-        String errorMessage = 'Bağlantı hatası';
-        
-        if (e.toString().contains('SocketException')) {
-          errorMessage = 'İnternet bağlantınızı kontrol edin';
-        } else if (e.toString().contains('TimeoutException')) {
-          errorMessage = 'İşlem zaman aşımına uğradı, tekrar deneyin';
-        } else if (e.toString().contains('FormatException')) {
-          errorMessage = 'Sunucudan geçersiz yanıt alındı';
-        } else if (e is Exception) {
-          errorMessage = e.toString().replaceAll('Exception: ', '');
-        }
-        
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(errorMessage),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 5),
-            action: SnackBarAction(
-              label: 'Tekrar Dene',
-              textColor: Colors.white,
-              onPressed: () {
-                _register();
-              },
-            ),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  // 📝 YASAL SÖZLEŞME LOGLARINI KAYDET
-  Future<void> _logLegalConsents(int userId, String phone) async {
-    try {
-      print('📝 YASAL LOGLAR KAYDEDILIYOR...');
-      
       // Cihaz bilgilerini topla
       final deviceInfo = await _collectDeviceInfo();
       
-      // Konum bilgisi topla (izin varsa)
+      // Konum bilgisi topla
       Position? position;
       try {
         position = await Geolocator.getCurrentPosition(
@@ -273,176 +446,93 @@ class _SmsRegisterScreenState extends State<SmsRegisterScreen> {
       } catch (e) {
         print('⚠️ Konum alınamadı: $e');
       }
-      
-      // Her sözleşme için ayrı log kaydet
-      final consentsToLog = [
-        if (_kvkkAccepted) {
-          'type': 'kvkk',
-          'text': _getKVKKText(),
-          'summary': 'KVKK Aydınlatma Metni - Kişisel verilerin işlenmesi',
-        },
-        if (_userAgreementAccepted) {
-          'type': 'user_agreement',
-          'text': _getUserAgreementText(),
-          'summary': 'Kullanıcı Sözleşmesi - Hizmet kullanım şartları',
-        },
-        if (_commercialCommunicationAccepted) {
-          'type': 'commercial_communication',
-          'text': _getCommercialText(),
-          'summary': 'Ticari Elektronik İleti İzni - Kampanya ve duyurular',
-        },
-      ];
-      
-      for (var consent in consentsToLog) {
-        print('📝 SÖZLEŞME LOG API ÇAĞRILIYOR:');
-        print('   Type: ${consent['type']}');
-        print('   User ID: $userId');
-        print('   Text Length: ${(consent['text'] as String).length}');
+
+      // Her sözleşme için log kaydet
+      for (var contract in widget.pendingContracts) {
+        final type = contract['type'] as String;
+        final version = contract['latest_version'] as String;
+        final title = contract['title'] as String;
+
+        print('📝 SÖZLEŞME LOG: $type v$version');
         
         final response = await http.post(
           Uri.parse('https://admin.funbreakvale.com/api/log_legal_consent.php'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
-            'user_id': userId,
+            'user_id': widget.customerId,
             'user_type': 'customer',
-            'consent_type': consent['type'],
-            'consent_text': consent['text'],
-            'consent_summary': consent['summary'],
-            'consent_version': '1.0',
+            'consent_type': type,
+            'consent_text': _getContractContent(type),
+            'consent_summary': title,
+            'consent_version': version,
             'ip_address': deviceInfo['ip_address'],
             'user_agent': deviceInfo['user_agent'],
             'device_fingerprint': deviceInfo['device_fingerprint'],
             'platform': deviceInfo['platform'],
             'os_version': deviceInfo['os_version'],
             'app_version': deviceInfo['app_version'],
-            'device_model': deviceInfo['device_model'],
-            'device_manufacturer': deviceInfo['device_manufacturer'],
             'latitude': position?.latitude,
             'longitude': position?.longitude,
             'location_accuracy': position?.accuracy,
-            'location_timestamp': position != null ? DateTime.now().toIso8601String() : null,
             'language': 'tr',
           }),
         ).timeout(const Duration(seconds: 10));
-        
-        print('📡 SÖZLEŞME LOG API RESPONSE:');
-        print('   Status: ${response.statusCode}');
-        print('   Body: ${response.body}');
-        
+
         final apiData = jsonDecode(response.body);
         if (apiData['success'] == true) {
-          print('✅ Sözleşme ${consent['type']} loglandı - Log ID: ${apiData['log_id']}');
+          print('✅ Sözleşme $type v$version loglandı - Log ID: ${apiData['log_id']}');
         } else {
-          print('❌ Sözleşme ${consent['type']} log hatası: ${apiData['message']}');
+          print('❌ Sözleşme $type log hatası: ${apiData['message']}');
         }
       }
-      
-      print('✅ ${consentsToLog.length} sözleşme YASAL OLARAK loglandı - Mahkeme delili kaydedildi!');
+
+      print('✅ TÜM SÖZLEŞMELER ONAYLANDI!');
+
+      // Ana sayfaya yönlendir
+      widget.onAllAccepted();
+
     } catch (e) {
-      print('⚠️ Yasal log hatası: $e (Kayıt tamamlandı ama log kaydedilemedi)');
+      print('❌ Sözleşme kayıt hatası: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Bir hata oluştu: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
-  
-  // CİHAZ BİLGİLERİNİ TOPLA
+
   Future<Map<String, dynamic>> _collectDeviceInfo() async {
     final platform = Platform.isAndroid ? 'android' : (Platform.isIOS ? 'ios' : 'unknown');
-    
     final fingerprint = DateTime.now().millisecondsSinceEpoch.toString() + 
-                       '_' + 
-                       (_emailController.text.hashCode.toString());
+                       '_customer_' + 
+                       widget.customerId.toString();
     
     return {
       'platform': platform,
       'os_version': Platform.operatingSystemVersion,
-      'app_version': '1.0.0',
-      'device_model': 'auto',
-      'device_manufacturer': 'auto',
+      'app_version': '4.0.0',
       'device_fingerprint': fingerprint,
-      'user_agent': 'FunBreak Customer App/$platform ${Platform.operatingSystemVersion}',
+      'user_agent': 'FunBreak Vale Customer/$platform ${Platform.operatingSystemVersion}',
       'ip_address': 'auto',
     };
   }
 
-  // SÖZLEŞME DIALOG'LARI
-  void _showKVKKDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('KVKK Aydınlatma Metni'),
-        content: SingleChildScrollView(
-          child: Text(_getKVKKText(), style: const TextStyle(fontSize: 13)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Kapat'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              setState(() => _kvkkAccepted = true);
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFD700)),
-            child: const Text('Kabul Ediyorum', style: TextStyle(color: Colors.black)),
-          ),
-        ],
-      ),
-    );
+  String _getContractContent(String type) {
+    switch (type) {
+      case 'kvkk':
+        return _getKVKKText();
+      case 'user_agreement':
+        return _getUserAgreementText();
+      case 'commercial_communication':
+        return _getCommercialText();
+      default:
+        return 'Sözleşme içeriği yüklenemedi.';
+    }
   }
-  
-  void _showUserAgreementDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Kullanıcı Sözleşmesi'),
-        content: SingleChildScrollView(
-          child: Text(_getUserAgreementText(), style: const TextStyle(fontSize: 13)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Kapat'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              setState(() => _userAgreementAccepted = true);
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFD700)),
-            child: const Text('Kabul Ediyorum', style: TextStyle(color: Colors.black)),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  void _showCommercialDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Ticari Elektronik İleti İzni'),
-        content: SingleChildScrollView(
-          child: Text(_getCommercialText(), style: const TextStyle(fontSize: 13)),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Kapat'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              setState(() => _commercialCommunicationAccepted = true);
-              Navigator.pop(context);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFFD700)),
-            child: const Text('Kabul Ediyorum', style: TextStyle(color: Colors.black)),
-          ),
-        ],
-      ),
-    );
-  }
-  
-  // SÖZLEŞME METİNLERİ - YASAL GEÇERLİLİK İÇİN TAM METİN!
+
   String _getKVKKText() {
     return '''===============================================================================
 
@@ -1230,7 +1320,7 @@ Müşteri Hizmetleri: 7/24 (mobil uygulama canlı destek)
 
 Versiyon: 4.0''';
   }
-  
+
   String _getUserAgreementText() {
     return '''===============================================================================
 
@@ -2057,7 +2147,7 @@ Web               : www.funbreakvale.com
 
 Versiyon: 4.0''';
   }
-  
+
   String _getCommercialText() {
     return '''===============================================================================
 
@@ -2257,342 +2347,5 @@ Web Sayfası       : www.funbreakvale.com
 
 Versiyon: 4.0''';
   }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Kayıt Ol'),
-        backgroundColor: const Color(0xFFFFD700),
-        foregroundColor: Colors.black,
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Logo
-                Center(
-                  child: Container(
-                    width: 100,
-                    height: 100,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFD700),
-                      borderRadius: BorderRadius.circular(50),
-                    ),
-                    child: const Icon(
-                      Icons.person_add,
-                      size: 50,
-                      color: Colors.black,
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 32),
-                
-                // Title
-                const Text(
-                  'Müşteri Kaydı',
-                  style: TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFFFFD700),
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Bilgilerinizi girin',
-                  style: TextStyle(
-                    fontSize: 16,
-                    color: Colors.grey,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 32),
-                
-                // Name Field
-                TextFormField(
-                  controller: _nameController,
-                  textCapitalization: TextCapitalization.words,
-                  keyboardType: TextInputType.text,
-                  enableSuggestions: true,
-                  autocorrect: true,
-                  decoration: const InputDecoration(
-                    labelText: 'İsim Soyisim',
-                    hintText: 'Ahmet Yılmaz',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.person),
-                  ),
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'İsim soyisim gerekli';
-                    }
-                    if (value.trim().split(' ').length < 2) {
-                      return 'Lütfen ad ve soyadınızı girin';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                
-                // Phone Field
-                TextFormField(
-                  controller: _phoneController,
-                  keyboardType: TextInputType.phone,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(10), // 10 haneli (5XXXXXXXXX)
-                  ],
-                  decoration: const InputDecoration(
-                    labelText: 'Telefon Numarası',
-                    hintText: '5XX XXX XX XX',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.phone),
-                    prefixText: '0',
-                  ),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Telefon numarası gerekli';
-                    }
-                    String cleaned = value.replaceAll(RegExp(r'[^0-9]'), '');
-                    if (cleaned.length != 10) {
-                      return 'Telefon numarası 10 haneli olmalı';
-                    }
-                    if (!cleaned.startsWith('5')) {
-                      return 'Telefon numarası 5 ile başlamalı';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                
-                // Email Field
-                TextFormField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.text,
-                  enableSuggestions: false,
-                  autocorrect: false,
-                  decoration: const InputDecoration(
-                    labelText: 'E-posta',
-                    hintText: 'ornek@email.com',
-                    border: OutlineInputBorder(),
-                    prefixIcon: Icon(Icons.email),
-                  ),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'E-posta gerekli';
-                    }
-                    if (!value.contains('@') || !value.contains('.')) {
-                      return 'Geçerli bir e-posta girin';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 32),
-                
-                // 📋 YASAL SÖZLEŞMELER BÖLÜMÜ
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.grey.shade300),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.policy, size: 20, color: Colors.black87),
-                          SizedBox(width: 8),
-                          Text(
-                            'Yasal Sözleşmeler',
-                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      
-                      // 1. KVKK AYDINLATMA METNİ - ZORUNLU!
-                      CheckboxListTile(
-                        value: _kvkkAccepted,
-                        onChanged: (value) => setState(() => _kvkkAccepted = value ?? false),
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        title: RichText(
-                          text: TextSpan(
-                            style: const TextStyle(color: Colors.black87, fontSize: 13),
-                            children: [
-                              TextSpan(
-                                text: 'KVKK Aydınlatma Metni',
-                                style: const TextStyle(
-                                  color: Colors.blue,
-                                  decoration: TextDecoration.underline,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                recognizer: TapGestureRecognizer()
-                                  ..onTap = () => _showKVKKDialog(),
-                              ),
-                              const TextSpan(text: '\'ni okudum, kabul ediyorum. '),
-                              const TextSpan(
-                                text: '*ZORUNLU',
-                                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      
-                      // 2. KULLANICI SÖZLEŞMESİ - ZORUNLU!
-                      CheckboxListTile(
-                        value: _userAgreementAccepted,
-                        onChanged: (value) => setState(() => _userAgreementAccepted = value ?? false),
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        title: RichText(
-                          text: TextSpan(
-                            style: const TextStyle(color: Colors.black87, fontSize: 13),
-                            children: [
-                              TextSpan(
-                                text: 'Kullanıcı Sözleşmesi',
-                                style: const TextStyle(
-                                  color: Colors.blue,
-                                  decoration: TextDecoration.underline,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                recognizer: TapGestureRecognizer()
-                                  ..onTap = () => _showUserAgreementDialog(),
-                              ),
-                              const TextSpan(text: '\'ni okudum, kabul ediyorum. '),
-                              const TextSpan(
-                                text: '*ZORUNLU',
-                                style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      
-                      // 3. TİCARİ ELEKTRONİK İLETİ İZNİ - OPSİYONEL!
-                      CheckboxListTile(
-                        value: _commercialCommunicationAccepted,
-                        onChanged: (value) => setState(() => _commercialCommunicationAccepted = value ?? false),
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        controlAffinity: ListTileControlAffinity.leading,
-                        title: RichText(
-                          text: TextSpan(
-                            style: const TextStyle(color: Colors.black87, fontSize: 13),
-                            children: [
-                              TextSpan(
-                                text: 'Ticari Elektronik İleti Onayı',
-                                style: const TextStyle(
-                                  color: Colors.blue,
-                                  decoration: TextDecoration.underline,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                recognizer: TapGestureRecognizer()
-                                  ..onTap = () => _showCommercialDialog(),
-                              ),
-                              const TextSpan(text: '\'ni kabul ediyorum. '),
-                              const TextSpan(
-                                text: '(Opsiyonel - Kampanya bildirimleri)',
-                                style: TextStyle(color: Colors.grey, fontSize: 11),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                
-                // Info Box - SMS bilgisi
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.blue.shade200),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue.shade700),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'Kayıt sonrası telefonunuza SMS ile doğrulama kodu gönderilecektir.',
-                          style: TextStyle(
-                            color: Colors.blue.shade700,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                
-                // Register Button
-                SizedBox(
-                  height: 50,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _register,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFFFFD700),
-                      foregroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 24,
-                            height: 24,
-                            child: CircularProgressIndicator(
-                              color: Colors.black,
-                              strokeWidth: 2,
-                            ),
-                          )
-                        : const Text(
-                            'Kayıt Ol',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                
-                // Login Link
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Text('Zaten hesabınız var mı? '),
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text(
-                        'Giriş Yap',
-                        style: TextStyle(
-                          color: Color(0xFFFFD700),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
+
